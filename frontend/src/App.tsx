@@ -804,7 +804,7 @@ export default function App() {
           <div className="models-list">
             <div className="model-item">
               <span>👁️ Vision LLM:</span>
-              <span style={{ color: '#e5e7eb' }}>Qwen2-VL-2B</span>
+              <span style={{ color: '#e5e7eb' }}>Qwen2.5-VL-7B (4-bit)</span>
             </div>
             <div className="model-item">
               <span>🎨 Image Gen:</span>

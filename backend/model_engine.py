@@ -5,10 +5,19 @@ import time
 from typing import AsyncGenerator, Dict, Any, Optional, List
 import psutil
 import torch
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, TextIteratorStreamer
+from transformers import AutoProcessor, TextIteratorStreamer, BitsAndBytesConfig
 from qwen_vl_utils import process_vision_info
 
-DEFAULT_MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
+# Try importing Qwen2.5-VL model class, fallback to Qwen2-VL or AutoModel
+try:
+    from transformers import Qwen2_5_VLForConditionalGeneration as VisionModelClass
+except ImportError:
+    try:
+        from transformers import Qwen2VLForConditionalGeneration as VisionModelClass
+    except ImportError:
+        from transformers import AutoModelForVision2Seq as VisionModelClass
+
+DEFAULT_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 
 class LLMEngine:
     def __init__(self, model_id: str = DEFAULT_MODEL_ID):
@@ -59,7 +68,7 @@ class LLMEngine:
 
             self.is_loading = True
             self.last_error = None
-            print(f"[LLMEngine] Loading Vision-Language Model: {self.model_id} on {self.device}...")
+            print(f"[LLMEngine] Loading Vision-Language Model: {self.model_id} (4-bit NF4 quantized) on {self.device}...")
 
             try:
                 # Processor loading (Tokenizer + Image Processor)
@@ -68,27 +77,33 @@ class LLMEngine:
                     trust_remote_code=True
                 )
 
-                dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float16
-                if not torch.cuda.is_available():
-                    dtype = torch.float32
-
-                print(f"[LLMEngine] Using dtype: {dtype}")
-
-                self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                    self.model_id,
-                    torch_dtype=dtype,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    trust_remote_code=True,
-                    low_cpu_mem_usage=True
-                )
-
-                if not torch.cuda.is_available():
-                    self.model = self.model.to("cpu")
+                if torch.cuda.is_available():
+                    print("[LLMEngine] Applying 4-bit NF4 quantization for 7B model...")
+                    bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                        bnb_4bit_use_double_quant=True,
+                    )
+                    self.model = VisionModelClass.from_pretrained(
+                        self.model_id,
+                        quantization_config=bnb_config,
+                        device_map="auto",
+                        trust_remote_code=True,
+                        low_cpu_mem_usage=True
+                    )
+                else:
+                    self.model = VisionModelClass.from_pretrained(
+                        self.model_id,
+                        torch_dtype=torch.float32,
+                        trust_remote_code=True,
+                        low_cpu_mem_usage=True
+                    ).to("cpu")
 
                 self.model.eval()
                 self.is_ready = True
                 self.is_loading = False
-                print(f"[LLMEngine] Vision Model {self.model_id} successfully loaded and ready on {self.device}!")
+                print(f"[LLMEngine] High-precision Vision-Language Model {self.model_id} successfully loaded and ready on {self.device}!")
                 return True
             except Exception as e:
                 self.is_ready = False

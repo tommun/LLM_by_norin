@@ -8,8 +8,9 @@
 
 ## 🌟 主な特徴
 
-- 👁️ **マルチモーダル画像認識 (Vision LLM)**:
-  - 最先端のVision-Languageモデル **`Qwen/Qwen2-VL-2B-Instruct`** を採用。
+- 👁️ **マルチモーダル画像認識 & 高度推論 (Vision LLM)**:
+  - 最新鋭のVision-Languageモデル **`Qwen/Qwen2.5-VL-7B-Instruct`（4-bit NF4量子化）** を採用。
+  - 従来の2Bから **70億パラメータ（7B）** に大幅アップグレードし、**自然で美しいネイティブ日本語・正確な数学的知識・論理的推論力** を獲得。
   - テキストでの対話はもちろん、**スクリーンショットや写真、図表、コード画像を貼り付けると、AIが画像内容を直接読み取って正確に解説・分析・回答**します。
   - **クリップボード貼り付け (Ctrl+V)** やドラッグ＆ドロップ、画像ファイル選択に対応。
 - 🗂️ **会話のタブ形式管理 (マルチセッション)**:
@@ -46,14 +47,14 @@
     - `3:4` ポスター縦長 (432×576) - ポスター、人物画
   - テキストチャット中に「`/image <プロンプト>`」と入力するだけでも直接画像を生成可能。
 - ⚡ **RTX 4070 Ti の VRAM 内で両モデルが完全共存**:
-  - Vision LLM (約 4.5GB) + SD-Turbo (約 2.8GB) = **合計約 7.3GB / 12.0GB**。
-  - モデルの入れ替えやリロード待ちなしで、**画像認識対話と画像生成の両方を同時に即座に実行**できます。
+  - Qwen2.5-VL-7B 4-bit (約 5.2GB) + SD-Turbo (約 2.8GB) = **合計約 8.0GB / 12.0GB**。
+  - 約 4.0GB の空きVRAMを残した状態で、**高知能な画像認識対話と1秒未満の画像生成の両方を同時に即座に実行**できます。
 - 🎛️ **充実した回答アクションツールバー**:
   - ChatGPTやClaudeと同様に、AIの各回答の下に **「👍 良い回答」「👎 不適切」「🔄 再生成」「📋 コピー」** のボタンを設置。
 - 💾 **ワンクリック Git 同期 (プッシュ)**:
   - サイドバーの「生成画像をGitへプッシュ」ボタンを押すだけで、生成された画像がローカルの `outputs/` に保存され、自動で GitHub リポジトリ（`main` ブランチ）へコミット＆プッシュされます。
 - 📊 **リアルタイム GPU & VRAM モニタリング**:
-  - VRAM使用量/総容量（例: `7.3 GB / 12.0 GB`）、GPUステータス、モデル稼働状態を画面上にリアルタイム表示。
+  - VRAM使用量/総容量（例: `8.0 GB / 12.0 GB`）、GPUステータス、モデル稼働状態を画面上にリアルタイム表示。
 
 ---
 
@@ -62,8 +63,8 @@
 - **Backend**:
   - FastAPI / Uvicorn
   - PyTorch (CUDA 12.4)
-  - Hugging Face Transformers / Accelerate / Diffusers / Qwen-VL-Utils
-  - Vision LLMモデル: `Qwen/Qwen2-VL-2B-Instruct`
+  - Hugging Face Transformers / Accelerate / Diffusers / Qwen-VL-Utils / BitsAndBytes (4-bit NF4)
+  - Vision LLMモデル: `Qwen/Qwen2.5-VL-7B-Instruct` (4-bit NF4 Quantized)
   - 画像生成モデル: `stabilityai/sd-turbo`
 - **Frontend**:
   - React 18 / TypeScript

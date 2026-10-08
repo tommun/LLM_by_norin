@@ -13,3 +13,4 @@ sse-starlette>=2.2.0
 pydantic>=2.10.0
 psutil>=7.0.0
 python-dotenv>=1.0.1
+bitsandbytes>=0.50.2
