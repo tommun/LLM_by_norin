@@ -32,7 +32,8 @@ import {
   FolderUp,
   Play,
   Square,
-  Folder
+  Folder,
+  Wand2
 } from 'lucide-react';
 import './style.css';
 
@@ -76,15 +77,29 @@ const STYLE_PRESETS = [
   { key: '3d', name: '3Dデジタル (3D Render)' },
 ];
 
+export interface BotConfig {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  avatar: string;
+  avatar_image: string;
+  system_prompt: string;
+  greeting: string;
+  quick_prompts: string[];
+  is_preset?: boolean;
+}
+
 interface ChatSession {
   id: string;
   title: string;
   createdAt: number;
   messages: Message[];
-  mode: 'chat' | 'image' | 'train';
+  mode: 'chat' | 'image' | 'train' | 'bots';
   aspectRatio: AspectRatio;
   style: string;
   loraName?: string;
+  botId?: string;
 }
 
 interface GpuStatus {
@@ -178,6 +193,27 @@ export default function App() {
   const [isUploadingDataset, setIsUploadingDataset] = useState(false);
   const trainFileInputRef = useRef<HTMLInputElement>(null);
 
+  // Bot Management States
+  const [bots, setBots] = useState<BotConfig[]>([]);
+  const [isEditingBot, setIsEditingBot] = useState(false);
+  const [editingBot, setEditingBot] = useState<Partial<BotConfig>>({
+    name: '',
+    description: '',
+    category: 'カスタム',
+    avatar: '🤖',
+    avatar_image: '',
+    system_prompt: '',
+    greeting: '',
+    quick_prompts: []
+  });
+  const [quickPromptInput, setQuickPromptInput] = useState('');
+  const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
+  const [botCategoryFilter, setBotCategoryFilter] = useState<string>('all');
+
+  // Derived Bot values
+  const currentBot = bots.find(b => b.id === activeSession.botId);
+  const filteredBots = botCategoryFilter === 'all' ? bots : bots.filter(b => b.category === botCategoryFilter);
+
   // Settings
   const [systemPrompt, setSystemPrompt] = useState('あなたは親切で有能なAIアシスタントです。画像やテキストの内容を正確に読み取り、分かりやすく日本語で回答してください。');
   const [temperature, setTemperature] = useState(0.7);
@@ -264,7 +300,153 @@ export default function App() {
   useEffect(() => {
     fetchDatasets();
     fetchTrainingStatus();
+    fetchBots();
   }, []);
+
+  const fetchBots = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/bots`);
+      if (res.ok) {
+        const data = await res.json();
+        setBots(data.bots || []);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleSaveBot = async () => {
+    if (!editingBot.name?.trim() || !editingBot.system_prompt?.trim()) {
+      alert('ボットの名前と役割（システムプロンプト）は必須です。');
+      return;
+    }
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/bots`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingBot)
+      });
+      if (res.ok) {
+        setIsEditingBot(false);
+        fetchBots();
+      } else {
+        const err = await res.json();
+        alert(`保存失敗: ${err.detail || 'エラー'}`);
+      }
+    } catch (e: any) {
+      alert(`通信エラー: ${e.message}`);
+    }
+  };
+
+  const handleDeleteBot = async (botId: string) => {
+    if (!confirm('このボットを削除してもよろしいですか？')) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/bots/${botId}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchBots();
+      } else {
+        const err = await res.json();
+        alert(err.detail || '削除に失敗しました');
+      }
+    } catch (e: any) {
+      alert(`通信エラー: ${e.message}`);
+    }
+  };
+
+  const handleGenerateBotAvatar = async () => {
+    if (!editingBot.name?.trim()) {
+      alert('ボットの名前を先に入力してください。');
+      return;
+    }
+    setIsGeneratingAvatar(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/bots/generate-avatar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editingBot.name,
+          prompt: editingBot.description || editingBot.name
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEditingBot(prev => ({ ...prev, avatar_image: data.avatar_image }));
+      } else {
+        const err = await res.json();
+        alert(`生成失敗: ${err.detail || 'エラー'}`);
+      }
+    } catch (e: any) {
+      alert(`アバター生成エラー: ${e.message}`);
+    } finally {
+      setIsGeneratingAvatar(false);
+    }
+  };
+
+  const startCreateBot = () => {
+    setEditingBot({
+      name: '',
+      description: '',
+      category: 'カスタム',
+      avatar: '🤖',
+      avatar_image: '',
+      system_prompt: 'あなたは親切で有能なAIアシスタントです。',
+      greeting: 'こんにちは！何をお手伝いしましょうか？',
+      quick_prompts: []
+    });
+    setQuickPromptInput('');
+    setIsEditingBot(true);
+  };
+
+  const startEditBot = (bot: BotConfig) => {
+    setEditingBot({
+      ...bot,
+      quick_prompts: bot.quick_prompts ? [...bot.quick_prompts] : []
+    });
+    setQuickPromptInput('');
+    setIsEditingBot(true);
+  };
+
+  const handleAddQuickPrompt = () => {
+    if (!quickPromptInput.trim()) return;
+    setEditingBot(prev => ({
+      ...prev,
+      quick_prompts: [...(prev.quick_prompts || []), quickPromptInput.trim()]
+    }));
+    setQuickPromptInput('');
+  };
+
+  const handleRemoveQuickPrompt = (index: number) => {
+    setEditingBot(prev => ({
+      ...prev,
+      quick_prompts: (prev.quick_prompts || []).filter((_, i) => i !== index)
+    }));
+  };
+
+  const handleSelectQuickPrompt = (promptText: string) => {
+    setInput(promptText);
+    textareaRef.current?.focus();
+  };
+
+  const startChatWithBot = (bot: BotConfig) => {
+    const newSessionId = `session-${Date.now()}`;
+    const newSession: ChatSession = {
+      id: newSessionId,
+      title: `${bot.name}`,
+      createdAt: Date.now(),
+      messages: bot.greeting ? [{
+        id: `greeting-${Date.now()}`,
+        role: 'assistant',
+        content: bot.greeting
+      }] : [],
+      mode: 'chat',
+      aspectRatio: '1:1',
+      style: 'none',
+      botId: bot.id
+    };
+    setSystemPrompt(bot.system_prompt);
+    setSessions(prev => [newSession, ...prev]);
+    setActiveSessionId(newSessionId);
+  };
 
   const handleTrainImagesSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -1012,7 +1194,7 @@ export default function App() {
                   onDoubleClick={(e) => startRenameTab(s, e)}
                   title="ダブルクリックでタイトルを変更"
                 >
-                  {s.mode === 'train' ? '🎓 ' : s.mode === 'image' ? '🎨 ' : '💬 '}
+                  {s.mode === 'bots' ? '🤖 ' : s.mode === 'train' ? '🎓 ' : s.mode === 'image' ? '🎨 ' : (s.botId && bots.find(b => b.id === s.botId)?.avatar) ? `${bots.find(b => b.id === s.botId)?.avatar} ` : '💬 '}
                   {s.title}
                 </span>
               )}
@@ -1260,35 +1442,207 @@ export default function App() {
                 </div>
               </div>
             </div>
+          ) : activeSession.mode === 'bots' ? (
+            <div className="bot-studio">
+              {/* Studio Header */}
+              <div className="bot-studio-header">
+                <div className="bot-studio-title-box">
+                  <div className="bot-studio-icon">🤖</div>
+                  <div>
+                    <h2>カスタムボットスタジオ (Custom Bot Studio)</h2>
+                    <p>
+                      RTX 4070 Ti のローカルLLM（Qwen2.5-VL-7B）で動作する専門特化AIボットを作成・管理できます。
+                    </p>
+                  </div>
+                </div>
+                <button className="create-bot-btn" onClick={startCreateBot}>
+                  <Plus size={16} /> 新規ボットを作成
+                </button>
+              </div>
+
+              {/* Category Filter Tabs */}
+              <div className="bot-category-bar">
+                {['all', '教育・学習', 'プログラミング', '語学・翻訳', '汎用アシスタント', 'カスタム'].map(cat => (
+                  <button
+                    key={cat}
+                    className={`bot-cat-btn ${botCategoryFilter === cat ? 'active' : ''}`}
+                    onClick={() => setBotCategoryFilter(cat)}
+                  >
+                    {cat === 'all' ? 'すべて表示' : cat}
+                  </button>
+                ))}
+              </div>
+
+              {/* Bots Cards Grid */}
+              <div className="bot-cards-grid">
+                {filteredBots.map(bot => (
+                  <div key={bot.id} className="bot-card">
+                    <div className="bot-card-top">
+                      <div className="bot-card-avatar">
+                        {bot.avatar_image ? (
+                          <img src={bot.avatar_image} alt={bot.name} />
+                        ) : (
+                          <span className="bot-card-emoji">{bot.avatar || '🤖'}</span>
+                        )}
+                      </div>
+                      <div className="bot-card-info">
+                        <div className="bot-card-title-row">
+                          <h4>{bot.name}</h4>
+                          {bot.is_preset ? (
+                            <span className="bot-preset-badge">公式</span>
+                          ) : (
+                            <span className="bot-custom-badge">カスタム</span>
+                          )}
+                        </div>
+                        <span className="bot-card-cat">{bot.category}</span>
+                      </div>
+                    </div>
+
+                    <p className="bot-card-desc">{bot.description}</p>
+
+                    {/* Quick Prompts Preview */}
+                    {bot.quick_prompts && bot.quick_prompts.length > 0 && (
+                      <div className="bot-card-prompts">
+                        <span className="prompts-label">質問例:</span>
+                        <div className="prompts-chips">
+                          {bot.quick_prompts.slice(0, 2).map((qp, idx) => (
+                            <span key={idx} className="prompt-preview-chip">
+                              "{qp}"
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="bot-card-actions">
+                      <button
+                        className="bot-chat-btn"
+                        onClick={() => startChatWithBot(bot)}
+                        title="このボットと会話を開始"
+                      >
+                        <MessageSquare size={14} /> 対話を開始
+                      </button>
+                      <button
+                        className="bot-edit-btn"
+                        onClick={() => startEditBot(bot)}
+                        title="設定を編集"
+                      >
+                        <Edit2 size={13} />
+                      </button>
+                      {!bot.is_preset && (
+                        <button
+                          className="bot-delete-btn"
+                          onClick={() => handleDeleteBot(bot.id)}
+                          title="削除"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : activeSession.messages.length === 0 ? (
             <div className="empty-chat">
-              {activeSession.mode === 'chat' ? (
-                <Bot className="empty-icon" />
+              {activeSession.mode === 'chat' && currentBot ? (
+                <div className="empty-bot-welcome">
+                  <div className="empty-bot-avatar-large">
+                    {currentBot.avatar_image ? (
+                      <img src={currentBot.avatar_image} alt={currentBot.name} />
+                    ) : (
+                      <span>{currentBot.avatar || '🤖'}</span>
+                    )}
+                  </div>
+                  <h3>{currentBot.name}</h3>
+                  <span className="empty-bot-category">{currentBot.category}</span>
+                  <p className="empty-bot-description">{currentBot.description}</p>
+
+                  {currentBot.greeting && (
+                    <div className="empty-bot-greeting-quote">
+                      「{currentBot.greeting}」
+                    </div>
+                  )}
+
+                  {currentBot.quick_prompts && currentBot.quick_prompts.length > 0 && (
+                    <div className="empty-bot-prompts-section">
+                      <div className="empty-bot-prompts-title">
+                        <Sparkles size={14} color="#38bdf8" />
+                        <span>ワンクリックで質問を始める:</span>
+                      </div>
+                      <div className="empty-bot-prompts-grid">
+                        {currentBot.quick_prompts.map((qp, idx) => (
+                          <button
+                            key={idx}
+                            className="empty-prompt-card"
+                            onClick={() => handleSelectQuickPrompt(qp)}
+                          >
+                            <span>💡 {qp}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : activeSession.mode === 'chat' ? (
+                <>
+                  <Bot className="empty-icon" />
+                  <h3>マルチモーダル Vision AI アシスタント</h3>
+                  <p>
+                    テキストの会話はもちろん、画像を貼り付け（Ctrl+V）または添付すると、AIが画像を視覚的に認識して解説します。
+                  </p>
+                  <p style={{ fontSize: '0.85rem' }}>
+                    下のクリップボタンまたは Ctrl+V でスクリーンショットを直接貼り付けて質問できます。
+                  </p>
+
+                  {/* Suggest starting with a bot */}
+                  {bots.length > 0 && (
+                    <div className="empty-suggest-bots">
+                      <div className="suggest-title">🤖 専門特化ボットを選んでチャットを開始:</div>
+                      <div className="suggest-bots-row">
+                        {bots.slice(0, 4).map(b => (
+                          <button
+                            key={b.id}
+                            className="suggest-bot-chip"
+                            onClick={() => startChatWithBot(b)}
+                          >
+                            <span className="suggest-bot-avatar">
+                              {b.avatar_image ? <img src={b.avatar_image} alt={b.name} /> : b.avatar}
+                            </span>
+                            <span className="suggest-bot-name">{b.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
-                <ImageIcon className="empty-icon" style={{ color: '#8b5cf6' }} />
+                <>
+                  <ImageIcon className="empty-icon" style={{ color: '#8b5cf6' }} />
+                  <h3>高速ローカル画像生成スタジオ</h3>
+                  <p>
+                    SD-Turbo を使用し、RTX 4070 Ti の圧倒的なパワーでわずか1秒未満で画像を生成します。
+                  </p>
+                  <p style={{ fontSize: '0.85rem' }}>
+                    生成したい画像のプロンプトを入力してください。画風や縦横比も選べます。
+                  </p>
+                </>
               )}
-              <h3>
-                {activeSession.mode === 'chat'
-                  ? 'マルチモーダル Vision AI アシスタント'
-                  : '高速ローカル画像生成スタジオ'}
-              </h3>
-              <p>
-                {activeSession.mode === 'chat'
-                  ? 'テキストの会話はもちろん、画像を貼り付け（Ctrl+V）または添付すると、AIが画像を視覚的に認識して解説します。'
-                  : 'SD-Turbo を使用し、RTX 4070 Ti の圧倒的なパワーでわずか1秒未満で画像を生成します。'}
-              </p>
-              <p style={{ fontSize: '0.85rem' }}>
-                {activeSession.mode === 'chat'
-                  ? '下のクリップボタンまたは Ctrl+V でスクリーンショットを直接貼り付けて質問できます。'
-                  : '生成したい画像のプロンプトを入力してください。画風や縦横比も選べます。'}
-              </p>
             </div>
           ) : (
             activeSession.messages.map((msg) => (
               <div key={msg.id} className={`message-row ${msg.role === 'user' ? 'user' : 'ai'}`}>
                 {msg.role !== 'user' && (
                   <div className={`message-avatar ${msg.isImage ? 'avatar-image-ai' : 'avatar-ai'}`}>
-                    {msg.isImage ? <ImageIcon size={18} /> : <Bot size={18} />}
+                    {msg.isImage ? (
+                      <ImageIcon size={18} />
+                    ) : currentBot?.avatar_image ? (
+                      <img src={currentBot.avatar_image} alt="Bot" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
+                    ) : currentBot?.avatar ? (
+                      <span style={{ fontSize: '1.1rem' }}>{currentBot.avatar}</span>
+                    ) : (
+                      <Bot size={18} />
+                    )}
                   </div>
                 )}
 
@@ -1431,6 +1785,13 @@ export default function App() {
                 <GraduationCap size={14} />
                 <span>画風学習 (LoRA)</span>
               </button>
+              <button
+                className={`mode-tab ${activeSession.mode === 'bots' ? 'active-bots' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'bots' }))}
+              >
+                <Bot size={14} />
+                <span>🤖 ボット管理 (Studio)</span>
+              </button>
             </div>
 
             {activeSession.mode === 'image' && (
@@ -1494,6 +1855,29 @@ export default function App() {
             )}
           </div>
 
+          {/* Quick Prompts Bar for Chat Mode with Active Bot */}
+          {activeSession.mode === 'chat' && currentBot && currentBot.quick_prompts && currentBot.quick_prompts.length > 0 && (
+            <div className="active-bot-prompts-bar">
+              <span className="abp-label">
+                <Sparkles size={12} color="#38bdf8" />
+                <span>{currentBot.name} のおすすめ質問:</span>
+              </span>
+              <div className="abp-list">
+                {currentBot.quick_prompts.map((qp, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    className="abp-chip"
+                    onClick={() => handleSelectQuickPrompt(qp)}
+                    title="クリックして入力欄にセット"
+                  >
+                    {qp}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Attachment Preview Chips */}
           {attachments.length > 0 && (
             <div className="attachment-preview-bar">
@@ -1513,59 +1897,232 @@ export default function App() {
             </div>
           )}
 
-          <div className={`chat-input-box ${activeSession.mode === 'image' ? 'image-mode-focus' : ''}`}>
-            {/* Attachment Button for Vision Mode */}
-            {activeSession.mode === 'chat' && (
-              <>
-                <button
-                  type="button"
-                  className="attach-btn"
-                  onClick={() => fileInputRef.current?.click()}
-                  title="画像を添付 (または直接Ctrl+Vで貼り付け)"
-                >
-                  <Paperclip size={18} />
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={handleFileSelect}
-                />
-              </>
-            )}
+          {activeSession.mode === 'bots' ? (
+            <div className="bot-studio-guide-bar">
+              <span>💡 ボットスタジオを閲覧中。お好みのボットのカードから「💬 対話を開始」を押すと、専用のチャットが開始します。</span>
+              <button className="guide-create-bot-btn" onClick={startCreateBot}>
+                <Plus size={14} /> 新規作成
+              </button>
+            </div>
+          ) : (
+            <div className={`chat-input-box ${activeSession.mode === 'image' ? 'image-mode-focus' : ''}`}>
+              {/* Attachment Button for Vision Mode */}
+              {activeSession.mode === 'chat' && (
+                <>
+                  <button
+                    type="button"
+                    className="attach-btn"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="画像を添付 (または直接Ctrl+Vで貼り付け)"
+                  >
+                    <Paperclip size={18} />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={handleFileSelect}
+                  />
+                </>
+              )}
 
-            <textarea
-              ref={textareaRef}
-              className="chat-textarea"
-              placeholder={
-                activeSession.mode === 'image'
-                  ? '生成したい画像のプロンプトを入力 (英語推奨, 画風と比率は上で選択可能)...'
-                  : 'メッセージを入力... (画像はCtrl+Vで貼り付け可能 / Shift+Enterで改行)'
-              }
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              rows={2}
-            />
-            <button
-              className={`send-button ${activeSession.mode === 'image' ? 'image-send' : ''}`}
-              onClick={handleSubmit}
-              disabled={isGenerating || (!input.trim() && attachments.length === 0) || gpuStatus?.is_loading}
-              title={activeSession.mode === 'image' ? '画像を生成' : 'メッセージ送信'}
-            >
-              {activeSession.mode === 'image' ? <ImageIcon size={18} /> : <Send size={18} />}
-            </button>
-          </div>
+              <textarea
+                ref={textareaRef}
+                className="chat-textarea"
+                placeholder={
+                  activeSession.mode === 'image'
+                    ? '生成したい画像のプロンプトを入力 (英語推奨, 画風と比率は上で選択可能)...'
+                    : currentBot
+                    ? `${currentBot.name} へ質問を入力... (画像はCtrl+Vで貼り付け可能 / Shift+Enterで改行)`
+                    : 'メッセージを入力... (画像はCtrl+Vで貼り付け可能 / Shift+Enterで改行)'
+                }
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                rows={2}
+              />
+              <button
+                className={`send-button ${activeSession.mode === 'image' ? 'image-send' : ''}`}
+                onClick={handleSubmit}
+                disabled={isGenerating || (!input.trim() && attachments.length === 0) || gpuStatus?.is_loading}
+                title={activeSession.mode === 'image' ? '画像を生成' : 'メッセージ送信'}
+              >
+                {activeSession.mode === 'image' ? <ImageIcon size={18} /> : <Send size={18} />}
+              </button>
+            </div>
+          )}
 
           <div className="input-footer">
-            <span>Powered by PyTorch CUDA & Qwen2-VL (Multimodal) + SD-Turbo</span>
+            <span>Powered by PyTorch CUDA & Qwen2.5-VL-7B (4-bit) + SD-Turbo</span>
             <span>Target GPU: GeForce RTX 4070 Ti (12GB)</span>
           </div>
         </div>
       </main>
+
+      {/* Bot Create / Edit Modal */}
+      {isEditingBot && (
+        <div className="modal-overlay" onClick={() => setIsEditingBot(false)}>
+          <div className="bot-modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="bot-modal-header">
+              <h3>{editingBot.id ? '🤖 ボットの編集' : '✨ 新しいカスタムボットの作成'}</h3>
+              <button className="modal-close-btn" onClick={() => setIsEditingBot(false)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="bot-form-body">
+              {/* Name & Category */}
+              <div className="form-row-2">
+                <div className="form-group">
+                  <label>ボット名 *</label>
+                  <input
+                    type="text"
+                    className="bot-form-input"
+                    placeholder="例: 高校数学・物理アシスタント"
+                    value={editingBot.name || ''}
+                    onChange={(e) => setEditingBot({ ...editingBot, name: e.target.value })}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>カテゴリ</label>
+                  <select
+                    className="bot-form-select"
+                    value={editingBot.category || 'カスタム'}
+                    onChange={(e) => setEditingBot({ ...editingBot, category: e.target.value })}
+                  >
+                    <option value="教育・学習">教育・学習</option>
+                    <option value="プログラミング">プログラミング</option>
+                    <option value="語学・翻訳">語学・翻訳</option>
+                    <option value="汎用アシスタント">汎用アシスタント</option>
+                    <option value="業務効率化">業務効率化</option>
+                    <option value="クリエイティブ">クリエイティブ</option>
+                    <option value="カスタム">カスタム</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Avatar Setup */}
+              <div className="avatar-config-box">
+                <div className="avatar-preview-box">
+                  {editingBot.avatar_image ? (
+                    <img src={editingBot.avatar_image} alt="Avatar" className="avatar-preview-img" />
+                  ) : (
+                    <span className="avatar-preview-emoji">{editingBot.avatar || '🤖'}</span>
+                  )}
+                </div>
+                <div className="avatar-inputs">
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      type="text"
+                      className="bot-form-input"
+                      style={{ width: '70px', textAlign: 'center', fontSize: '1.2rem' }}
+                      placeholder="絵文字"
+                      value={editingBot.avatar || '🤖'}
+                      onChange={(e) => setEditingBot({ ...editingBot, avatar: e.target.value })}
+                    />
+                    <button
+                      type="button"
+                      className="generate-avatar-btn"
+                      onClick={handleGenerateBotAvatar}
+                      disabled={isGeneratingAvatar || !editingBot.name?.trim()}
+                      title="ボット名と説明からSD-Turboで専用アバター画像を即座に生成"
+                    >
+                      <Wand2 size={14} />
+                      <span>{isGeneratingAvatar ? 'アバター生成中...' : '🎨 AIでアバター画像を自動生成'}</span>
+                    </button>
+                    {editingBot.avatar_image && (
+                      <button
+                        type="button"
+                        className="remove-avatar-btn"
+                        onClick={() => setEditingBot({ ...editingBot, avatar_image: '' })}
+                      >
+                        クリア
+                      </button>
+                    )}
+                  </div>
+                  <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                    絵文字、または「AIでアバター画像を自動生成」でSD-Turboが専用イラストアイコンを瞬時に作成します。
+                  </span>
+                </div>
+              </div>
+
+              {/* Description */}
+              <div className="form-group">
+                <label>説明文</label>
+                <input
+                  type="text"
+                  className="bot-form-input"
+                  placeholder="例: 数学や物理の難問をステップ順に分かりやすく解説するボット"
+                  value={editingBot.description || ''}
+                  onChange={(e) => setEditingBot({ ...editingBot, description: e.target.value })}
+                />
+              </div>
+
+              {/* System Prompt */}
+              <div className="form-group">
+                <label>システムプロンプト（役割・口調・指導方針など） *</label>
+                <textarea
+                  className="bot-form-textarea"
+                  rows={4}
+                  placeholder="あなたはプロの塾講師です。生徒の質問に対して答えをすぐ言うのではなく、考え方のヒントを順序立てて教えてください。"
+                  value={editingBot.system_prompt || ''}
+                  onChange={(e) => setEditingBot({ ...editingBot, system_prompt: e.target.value })}
+                />
+              </div>
+
+              {/* Greeting Message */}
+              <div className="form-group">
+                <label>初回メッセージ（会話開始時の挨拶）</label>
+                <input
+                  type="text"
+                  className="bot-form-input"
+                  placeholder="例: こんにちは！数学の疑問や宿題のつまずきがあれば何でも聞いてね！"
+                  value={editingBot.greeting || ''}
+                  onChange={(e) => setEditingBot({ ...editingBot, greeting: e.target.value })}
+                />
+              </div>
+
+              {/* Quick Prompts */}
+              <div className="form-group">
+                <label>クイック質問候補（ユーザーがワンクリックで送れる質問例）</label>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                  <input
+                    type="text"
+                    className="bot-form-input"
+                    placeholder="例: 二次関数の頂点の求め方を教えて"
+                    value={quickPromptInput}
+                    onChange={(e) => setQuickPromptInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddQuickPrompt())}
+                  />
+                  <button type="button" className="add-prompt-btn" onClick={handleAddQuickPrompt}>
+                    追加
+                  </button>
+                </div>
+                <div className="quick-prompts-list">
+                  {(editingBot.quick_prompts || []).map((qp, idx) => (
+                    <span key={idx} className="quick-prompt-tag">
+                      {qp}
+                      <button type="button" onClick={() => handleRemoveQuickPrompt(idx)}>×</button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="bot-modal-footer">
+              <button className="bot-cancel-btn" onClick={() => setIsEditingBot(false)}>
+                キャンセル
+              </button>
+              <button className="bot-save-btn" onClick={handleSaveBot}>
+                <Check size={16} /> 保存する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Image Preview Modal */}
       {selectedImage && (

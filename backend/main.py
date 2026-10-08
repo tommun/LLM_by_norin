@@ -338,7 +338,110 @@ async def stop_training():
     tracker.should_stop = True
     return {"status": "stopping"}
 
+
+# ----------------------------------------------------
+# Chatbot Persona & Custom Bot Management APIs
+# ----------------------------------------------------
+class BotModel(BaseModel):
+    id: Optional[str] = None
+    name: str
+    description: str = ""
+    category: str = "カスタム"
+    avatar: str = "🤖"
+    avatar_image: str = ""
+    system_prompt: str
+    greeting: str = ""
+    quick_prompts: List[str] = []
+    is_preset: bool = False
+
+class GenerateAvatarRequest(BaseModel):
+    name: str
+    prompt: Optional[str] = None
+
+@app.get("/api/bots")
+async def get_bots():
+    """List all available chatbots from backend/bots directory."""
+    bots_dir = os.path.join(os.path.dirname(__file__), "bots")
+    os.makedirs(bots_dir, exist_ok=True)
+    
+    bots = []
+    for f in os.scandir(bots_dir):
+        if f.is_file() and f.name.endswith(".json"):
+            try:
+                with open(f.path, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+                    bots.append(data)
+            except Exception as e:
+                print(f"Error loading bot {f.name}: {e}")
+                
+    # Sort presets first, then alphabetically
+    bots.sort(key=lambda b: (not b.get("is_preset", False), b.get("name", "")))
+    return {"bots": bots}
+
+@app.post("/api/bots")
+async def save_bot(bot: BotModel):
+    """Create or update a custom chatbot."""
+    bots_dir = os.path.join(os.path.dirname(__file__), "bots")
+    os.makedirs(bots_dir, exist_ok=True)
+
+    bot_id = bot.id
+    if not bot_id:
+        clean_name = "".join(c for c in bot.name if c.isalnum() or c in ("_", "-")).lower().strip() or "bot"
+        bot_id = f"bot_{clean_name}_{int(time.time())}"
+    
+    bot_dict = bot.dict()
+    bot_dict["id"] = bot_id
+    
+    filepath = os.path.join(bots_dir, f"{bot_id}.json")
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(bot_dict, f, ensure_ascii=False, indent=2)
+
+    return {"status": "success", "bot": bot_dict}
+
+@app.delete("/api/bots/{bot_id}")
+async def delete_bot(bot_id: str):
+    """Delete a custom chatbot (presets cannot be deleted)."""
+    bots_dir = os.path.join(os.path.dirname(__file__), "bots")
+    filepath = os.path.join(bots_dir, f"{bot_id}.json")
+    
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Bot not found")
+        
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if data.get("is_preset", False):
+                raise HTTPException(status_code=400, detail="デフォルトプリセットボットは削除できません")
+        os.remove(filepath)
+        return {"status": "success", "deleted_id": bot_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/bots/generate-avatar")
+async def generate_bot_avatar(req: GenerateAvatarRequest):
+    """Generate a cute character avatar icon using SD-Turbo."""
+    custom_desc = req.prompt.strip() if req.prompt else req.name
+    avatar_prompt = f"avatar icon of {custom_desc}, cute portrait, digital art, profile picture, vibrant colors, masterpiece, 8k resolution, centered composition"
+    
+    try:
+        result = image_engine.generate(
+            prompt=avatar_prompt,
+            width=512,
+            height=512,
+            num_inference_steps=1,
+            style="anime"
+        )
+        return {
+            "status": "success",
+            "avatar_image": result["image_url"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Avatar generation failed: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+
 
