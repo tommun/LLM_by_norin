@@ -5,6 +5,8 @@ import os
 import subprocess
 import threading
 import time
+import torch
+import gc
 from contextlib import asynccontextmanager
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -221,6 +223,122 @@ async def sync_outputs_to_git(req: GitSyncRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Git sync failed: {str(e)}")
 
+
+# ----------------------------------------------------
+# Art Style LoRA Training APIs
+# ----------------------------------------------------
+class DatasetUploadRequest(BaseModel):
+    style_name: str
+    images: List[str]  # list of base64 data URLs
+
+class StartTrainingRequest(BaseModel):
+    style_name: str
+    total_steps: int = 300
+    auto_caption: bool = True
+
+@app.get("/api/train/datasets")
+async def list_datasets():
+    """List available style datasets in training_data/ directory."""
+    training_data_dir = os.path.join(os.path.dirname(__file__), "training_data")
+    os.makedirs(training_data_dir, exist_ok=True)
+    
+    datasets = []
+    valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    
+    for entry in os.scandir(training_data_dir):
+        if entry.is_dir():
+            style_name = entry.name
+            img_files = []
+            for f in os.scandir(entry.path):
+                if f.is_file() and os.path.splitext(f.name)[1].lower() in valid_exts:
+                    img_files.append(f.name)
+            
+            datasets.append({
+                "style_name": style_name,
+                "image_count": len(img_files),
+                "sample_images": img_files[:5],
+                "path": entry.path
+            })
+            
+    return {"datasets": datasets}
+
+@app.post("/api/train/dataset/upload")
+async def upload_dataset_images(req: DatasetUploadRequest):
+    """Upload images into a style dataset directory."""
+    style_name = "".join(c for c in req.style_name if c.isalnum() or c in ("_", "-")).strip()
+    if not style_name:
+        raise HTTPException(status_code=400, detail="Invalid style name. Use alphanumeric characters or underscores.")
+    
+    dataset_dir = os.path.join(os.path.dirname(__file__), "training_data", style_name)
+    os.makedirs(dataset_dir, exist_ok=True)
+
+    saved_count = 0
+    for idx, data_url in enumerate(req.images):
+        if "," in data_url:
+            _, b64data = data_url.split(",", 1)
+        else:
+            b64data = data_url
+        try:
+            raw_bytes = base64.b64decode(b64data)
+            filename = f"img_{int(time.time())}_{idx}.png"
+            filepath = os.path.join(dataset_dir, filename)
+            with open(filepath, "wb") as f:
+                f.write(raw_bytes)
+            saved_count += 1
+        except Exception as e:
+            print(f"Error saving image {idx}: {e}")
+
+    return {
+        "status": "success",
+        "style_name": style_name,
+        "saved_count": saved_count,
+        "dataset_dir": dataset_dir
+    }
+
+@app.post("/api/train/start")
+async def start_training(req: StartTrainingRequest):
+    """Start LoRA training for a given style dataset."""
+    from train_lora import tracker, start_training_async
+
+    if tracker.is_training:
+        raise HTTPException(status_code=400, detail="A training job is already in progress.")
+
+    style_name = "".join(c for c in req.style_name if c.isalnum() or c in ("_", "-")).strip()
+    dataset_dir = os.path.join(os.path.dirname(__file__), "training_data", style_name)
+    
+    if not os.path.exists(dataset_dir):
+        raise HTTPException(status_code=404, detail=f"Dataset directory not found: {dataset_dir}")
+
+    # Clear PyTorch memory before starting training
+    torch.cuda.empty_cache()
+    import gc
+    gc.collect()
+
+    start_training_async(
+        dataset_dir=dataset_dir,
+        style_name=style_name,
+        total_steps=req.total_steps,
+        vision_engine=engine if req.auto_caption else None
+    )
+
+    return {"status": "started", "style_name": style_name, "total_steps": req.total_steps}
+
+@app.get("/api/train/status")
+async def get_training_status():
+    """Get the current training status and progress."""
+    from train_lora import tracker
+    return tracker.to_dict()
+
+@app.post("/api/train/stop")
+async def stop_training():
+    """Stop the running training job."""
+    from train_lora import tracker
+    if not tracker.is_training:
+        return {"status": "not_training"}
+    tracker.should_stop = True
+    return {"status": "stopping"}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+

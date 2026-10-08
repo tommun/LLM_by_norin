@@ -37,6 +37,9 @@ yarn-error.log*
 
 # Models & Large binary artifacts
 models/
+backend/training_data/
+!backend/training_data/.gitkeep
+backend/loras/*/
 *.safetensors
 *.bin
 *.pt

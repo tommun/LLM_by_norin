@@ -27,7 +27,12 @@ import {
   MoreHorizontal,
   Plus,
   Palette,
-  Edit2
+  Edit2,
+  GraduationCap,
+  FolderUp,
+  Play,
+  Square,
+  Folder
 } from 'lucide-react';
 import './style.css';
 
@@ -76,7 +81,7 @@ interface ChatSession {
   title: string;
   createdAt: number;
   messages: Message[];
-  mode: 'chat' | 'image';
+  mode: 'chat' | 'image' | 'train';
   aspectRatio: AspectRatio;
   style: string;
   loraName?: string;
@@ -163,6 +168,16 @@ export default function App() {
   const [editingTitle, setEditingTitle] = useState('');
   const [availableLoras, setAvailableLoras] = useState<string[]>([]);
 
+  // Style Training States
+  const [trainStyleName, setTrainStyleName] = useState('');
+  const [trainSteps, setTrainSteps] = useState(300);
+  const [trainAutoCaption, setTrainAutoCaption] = useState(true);
+  const [trainImages, setTrainImages] = useState<string[]>([]);
+  const [datasets, setDatasets] = useState<any[]>([]);
+  const [trainingStatus, setTrainingStatus] = useState<any>(null);
+  const [isUploadingDataset, setIsUploadingDataset] = useState(false);
+  const trainFileInputRef = useRef<HTMLInputElement>(null);
+
   // Settings
   const [systemPrompt, setSystemPrompt] = useState('あなたは親切で有能なAIアシスタントです。画像やテキストの内容を正確に読み取り、分かりやすく日本語で回答してください。');
   const [temperature, setTemperature] = useState(0.7);
@@ -202,6 +217,140 @@ export default function App() {
         setAvailableLoras(data);
       }
     } catch {
+      // Ignore
+    }
+  };
+
+  const fetchDatasets = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/train/datasets`);
+      if (res.ok) {
+        const data = await res.json();
+        setDatasets(data.datasets || []);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const fetchTrainingStatus = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/train/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setTrainingStatus(data);
+        if (!data.is_training && data.saved_lora_path) {
+          fetchLoras(); // Refresh LoRAs once training finishes
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  // Poll training status if training is in progress
+  useEffect(() => {
+    let interval: any = null;
+    if (trainingStatus?.is_training) {
+      interval = setInterval(fetchTrainingStatus, 1000);
+    } else {
+      interval = setInterval(fetchTrainingStatus, 3000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [trainingStatus?.is_training]);
+
+  useEffect(() => {
+    fetchDatasets();
+    fetchTrainingStatus();
+  }, []);
+
+  const handleTrainImagesSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    Array.from(files).forEach(file => {
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          if (event.target?.result) {
+            setTrainImages(prev => [...prev, event.target!.result as string]);
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+  };
+
+  const handleUploadAndPrepareDataset = async () => {
+    const cleanName = trainStyleName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!cleanName) {
+      alert('画風名（英数字推奨）を入力してください。例: my_anime_style');
+      return;
+    }
+    if (trainImages.length === 0) {
+      alert('学習用の画像を1枚以上選択またはドロップしてください。');
+      return;
+    }
+
+    setIsUploadingDataset(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/train/dataset/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          style_name: cleanName,
+          images: trainImages
+        })
+      });
+      if (res.ok) {
+        alert(`データセット '${cleanName}' に ${trainImages.length} 枚の画像を登録しました！`);
+        setTrainImages([]);
+        fetchDatasets();
+      } else {
+        const err = await res.json();
+        alert(`アップロード失敗: ${err.detail || 'エラー'}`);
+      }
+    } catch (e: any) {
+      alert(`通信エラー: ${e.message}`);
+    } finally {
+      setIsUploadingDataset(false);
+    }
+  };
+
+  const handleStartLoRATraining = async (selectedStyleName?: string) => {
+    const targetStyle = (selectedStyleName || trainStyleName).trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!targetStyle) {
+      alert('画風名を入力するか、登録済みデータセットを選択してください。');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/train/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          style_name: targetStyle,
+          total_steps: trainSteps,
+          auto_caption: trainAutoCaption
+        })
+      });
+      if (res.ok) {
+        fetchTrainingStatus();
+      } else {
+        const err = await res.json();
+        alert(`学習開始失敗: ${err.detail || 'エラー'}`);
+      }
+    } catch (e: any) {
+      alert(`通信エラー: ${e.message}`);
+    }
+  };
+
+  const handleStopLoRATraining = async () => {
+    try {
+      await fetch(`${BACKEND_URL}/api/train/stop`, { method: 'POST' });
+      fetchTrainingStatus();
+    } catch (e) {
       // Ignore
     }
   };
@@ -863,7 +1012,7 @@ export default function App() {
                   onDoubleClick={(e) => startRenameTab(s, e)}
                   title="ダブルクリックでタイトルを変更"
                 >
-                  {s.mode === 'image' ? '🎨 ' : '💬 '}
+                  {s.mode === 'train' ? '🎓 ' : s.mode === 'image' ? '🎨 ' : '💬 '}
                   {s.title}
                 </span>
               )}
@@ -888,9 +1037,230 @@ export default function App() {
           </button>
         </div>
 
-        {/* Messages */}
+        {/* Messages or Training Studio */}
         <div className="chat-messages">
-          {activeSession.messages.length === 0 ? (
+          {activeSession.mode === 'train' ? (
+            <div className="style-training-studio">
+              <div className="training-header">
+                <div className="training-title-row">
+                  <GraduationCap size={28} color="#c084fc" />
+                  <div>
+                    <h2>画風追加学習スタジオ (LoRA Training)</h2>
+                    <p>手持ちのイラスト画像を読み込ませ、RTX 4070 Ti (12GB) のGPUパワーであなただけの画風LoRAモデルを作成します（個人利用専用）。</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Training Progress / Status Card */}
+              {trainingStatus && (trainingStatus.is_training || trainingStatus.saved_lora_path) && (
+                <div className={`training-status-card ${trainingStatus.is_training ? 'active' : 'success'}`}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {trainingStatus.is_training ? (
+                        <RotateCw size={18} className="animate-spin text-purple-400" />
+                      ) : (
+                        <Check size={18} color="#10b981" />
+                      )}
+                      <span style={{ fontWeight: 600 }}>
+                        {trainingStatus.is_training ? `学習中: ${trainingStatus.style_name}` : `学習完了: ${trainingStatus.style_name}`}
+                      </span>
+                    </div>
+                    {trainingStatus.is_training && (
+                      <button className="stop-train-btn" onClick={handleStopLoRATraining}>
+                        <Square size={12} /> 中止
+                      </button>
+                    )}
+                    {!trainingStatus.is_training && trainingStatus.saved_lora_path && (
+                      <button
+                        className="try-lora-btn"
+                        onClick={() => {
+                          updateActiveSession(s => ({ ...s, mode: 'image', loraName: trainingStatus.style_name }));
+                        }}
+                      >
+                        🎨 この画風で画像生成を試す
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="training-progress-container">
+                    <div
+                      className="training-progress-fill"
+                      style={{ width: `${trainingStatus.progress_percent || 0}%` }}
+                    />
+                  </div>
+
+                  <div className="training-stats-row">
+                    <span>進捗: {trainingStatus.progress_percent}% ({trainingStatus.current_step} / {trainingStatus.total_steps} Steps)</span>
+                    <span>Loss: {trainingStatus.current_loss}</span>
+                    <span>経過: {trainingStatus.elapsed_seconds}s</span>
+                    {trainingStatus.is_training && trainingStatus.estimated_remaining_seconds > 0 && (
+                      <span>残り約: {Math.round(trainingStatus.estimated_remaining_seconds)}s</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#cbd5e1', marginTop: 4 }}>
+                    {trainingStatus.status_message}
+                  </div>
+                </div>
+              )}
+
+              {/* Dataset & Training Grid */}
+              <div className="training-grid">
+                {/* 1. Dataset upload & folder card */}
+                <div className="training-card">
+                  <h3>1. 画風名 & 学習画像の追加</h3>
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ display: 'block', fontSize: '0.8rem', color: '#94a3b8', marginBottom: 4 }}>
+                      画風の名前（英数字・アンダースコア）
+                    </label>
+                    <input
+                      type="text"
+                      className="train-input"
+                      placeholder="例: my_anime_style, watercolor_girl"
+                      value={trainStyleName}
+                      onChange={(e) => setTrainStyleName(e.target.value)}
+                    />
+                  </div>
+
+                  <div
+                    className="train-dropzone"
+                    onClick={() => trainFileInputRef.current?.click()}
+                  >
+                    <FolderUp size={32} color="#c084fc" />
+                    <p>クリックして画像を選択、またはドラッグ＆ドロップ</p>
+                    <span>PNG, JPG, WEBP 対応 (5〜15枚推奨)</span>
+                    <input
+                      type="file"
+                      ref={trainFileInputRef}
+                      onChange={handleTrainImagesSelect}
+                      multiple
+                      accept="image/*"
+                      style={{ display: 'none' }}
+                    />
+                  </div>
+
+                  {trainImages.length > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <span style={{ fontSize: '0.8rem', color: '#cbd5e1' }}>選択画像: {trainImages.length}枚</span>
+                        <button
+                          style={{ fontSize: '0.75rem', color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer' }}
+                          onClick={() => setTrainImages([])}
+                        >
+                          すべて解除
+                        </button>
+                      </div>
+                      <div className="train-image-grid">
+                        {trainImages.map((img, i) => (
+                          <div key={i} className="train-image-thumb">
+                            <img src={img} alt={`train-${i}`} />
+                            <button
+                              className="train-image-remove"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setTrainImages(prev => prev.filter((_, idx) => idx !== i));
+                              }}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <button
+                        className="save-dataset-btn"
+                        onClick={handleUploadAndPrepareDataset}
+                        disabled={isUploadingDataset}
+                      >
+                        {isUploadingDataset ? 'フォルダ保存中...' : `📁 フォルダ 'training_data/${trainStyleName || '...'}' に登録する`}
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="folder-tip">
+                    💡 <strong>直接フォルダに配置する場合:</strong><br />
+                    <code>backend/training_data/&lt;画風名&gt;/</code> フォルダにイラストを直接配置しても自動検出されます。
+                  </div>
+                </div>
+
+                {/* 2. Training configuration & execution */}
+                <div className="training-card">
+                  <h3>2. 学習設定 & 実行</h3>
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={{ display: 'block', fontSize: '0.8rem', color: '#94a3b8', marginBottom: 4 }}>
+                      学習ステップ数: {trainSteps} Steps (目安: 300 stepsで約2分)
+                    </label>
+                    <input
+                      type="range"
+                      min="100"
+                      max="800"
+                      step="50"
+                      value={trainSteps}
+                      onChange={(e) => setTrainSteps(parseInt(e.target.value))}
+                      className="param-slider image-accent"
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.85rem', cursor: 'pointer', color: '#e2e8f0' }}>
+                      <input
+                        type="checkbox"
+                        checked={trainAutoCaption}
+                        onChange={(e) => setTrainAutoCaption(e.target.checked)}
+                      />
+                      <span>🤖 Vision LLM による自動キャプション付与（推奨）</span>
+                    </label>
+                    <span style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'block', marginLeft: 24, marginTop: 2 }}>
+                      Vision AI が各画像の構図を言語化し、画風の特徴を綺麗に分離して高精度に学習します。
+                    </span>
+                  </div>
+
+                  <div style={{ marginBottom: 16 }}>
+                    <span style={{ fontSize: '0.8rem', color: '#94a3b8', display: 'block', marginBottom: 6 }}>
+                      登録済みデータセット一覧:
+                    </span>
+                    {datasets.length === 0 ? (
+                      <div style={{ fontSize: '0.8rem', color: '#64748b', fontStyle: 'italic' }}>
+                        登録済みデータセットがありません。左のフォームから作成してください。
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {datasets.map((ds) => (
+                          <div key={ds.style_name} className="dataset-item-row">
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <Folder size={16} color="#38bdf8" />
+                              <div>
+                                <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#f8fafc' }}>{ds.style_name}</span>
+                                <span style={{ fontSize: '0.75rem', color: '#94a3b8', marginLeft: 6 }}>({ds.image_count}枚)</span>
+                              </div>
+                            </div>
+                            <button
+                              className="start-single-train-btn"
+                              onClick={() => handleStartLoRATraining(ds.style_name)}
+                              disabled={trainingStatus?.is_training}
+                            >
+                              <Play size={12} /> 学習開始
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 'auto' }}>
+                    <button
+                      className="start-main-train-btn"
+                      onClick={() => handleStartLoRATraining()}
+                      disabled={trainingStatus?.is_training || (!trainStyleName && datasets.length === 0)}
+                    >
+                      <Play size={16} />
+                      <span>{trainingStatus?.is_training ? '学習進行中...' : `🚀 '${trainStyleName || (datasets[0]?.style_name || '選択中')}' の画風学習を開始`}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : activeSession.messages.length === 0 ? (
             <div className="empty-chat">
               {activeSession.mode === 'chat' ? (
                 <Bot className="empty-icon" />
@@ -1054,10 +1424,37 @@ export default function App() {
                 <ImageIcon size={14} />
                 <span>画像生成 (SD-Turbo)</span>
               </button>
+              <button
+                className={`mode-tab ${activeSession.mode === 'train' ? 'active-train' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'train' }))}
+              >
+                <GraduationCap size={14} />
+                <span>画風学習 (LoRA)</span>
+              </button>
             </div>
 
             {activeSession.mode === 'image' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                {/* LoRA Model Selector */}
+                {availableLoras.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ fontSize: '0.75rem', color: '#c084fc' }}>LoRA:</span>
+                    <select
+                      className="style-select"
+                      value={activeSession.loraName || ''}
+                      onChange={(e) => updateActiveSession(s => ({ ...s, loraName: e.target.value || undefined }))}
+                      style={{ padding: '3px 6px', fontSize: '0.75rem', borderColor: '#a855f7' }}
+                    >
+                      <option value="">なし (Default)</option>
+                      {availableLoras.map((lora) => (
+                        <option key={lora} value={lora}>
+                          {lora}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {/* Style Preset Selector */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <Palette size={14} color="#c4b5fd" />
