@@ -24,7 +24,10 @@ import {
   Copy,
   Check,
   GitBranch,
-  MoreHorizontal
+  MoreHorizontal,
+  Plus,
+  Palette,
+  Edit2
 } from 'lucide-react';
 import './style.css';
 
@@ -41,8 +44,42 @@ interface Message {
     elapsed_seconds: number;
     width?: number;
     height?: number;
+    style?: string;
+    style_name?: string;
   };
   feedback?: 'like' | 'dislike' | null;
+}
+
+type AspectRatio = '1:1' | '16:9' | '9:16' | '4:3' | '3:4';
+
+const ASPECT_RATIO_CONFIG: Record<AspectRatio, { label: string; width: number; height: number; desc: string }> = {
+  '1:1': { label: '1:1', width: 512, height: 512, desc: '正方形 (512×512)' },
+  '16:9': { label: '16:9', width: 640, height: 360, desc: 'ワイド横長 (640×360)' },
+  '9:16': { label: '9:16', width: 360, height: 640, desc: 'スマホ縦長 (360×640)' },
+  '4:3': { label: '4:3', width: 576, height: 432, desc: '写真横長 (576×432)' },
+  '3:4': { label: '3:4', width: 432, height: 576, desc: 'ポスター縦長 (432×576)' },
+};
+
+const STYLE_PRESETS = [
+  { key: 'none', name: '標準 (Default)' },
+  { key: 'anime', name: 'アニメ調 (Anime / Manga)' },
+  { key: 'photorealistic', name: '写実・写真 (Photo)' },
+  { key: 'watercolor', name: '水彩画 (Watercolor)' },
+  { key: 'oil', name: '油絵 (Oil Painting)' },
+  { key: 'cyberpunk', name: 'サイバーパンク (Cyberpunk)' },
+  { key: 'pixel', name: 'ピクセルアート (Pixel Art)' },
+  { key: '3d', name: '3Dデジタル (3D Render)' },
+];
+
+interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  messages: Message[];
+  mode: 'chat' | 'image';
+  aspectRatio: AspectRatio;
+  style: string;
+  loraName?: string;
 }
 
 interface GpuStatus {
@@ -64,29 +101,67 @@ interface GpuStatus {
   image_is_loading?: boolean;
 }
 
-type AspectRatio = '1:1' | '16:9' | '9:16' | '4:3' | '3:4';
-
-const ASPECT_RATIO_CONFIG: Record<AspectRatio, { label: string; width: number; height: number; desc: string }> = {
-  '1:1': { label: '1:1', width: 512, height: 512, desc: '正方形 (512×512)' },
-  '16:9': { label: '16:9', width: 640, height: 360, desc: 'ワイド横長 (640×360)' },
-  '9:16': { label: '9:16', width: 360, height: 640, desc: 'スマホ縦長 (360×640)' },
-  '4:3': { label: '4:3', width: 576, height: 432, desc: '写真横長 (576×432)' },
-  '3:4': { label: '3:4', width: 432, height: 576, desc: 'ポスター縦長 (432×576)' },
-};
-
 const BACKEND_URL = 'http://localhost:8000';
+const SESSIONS_STORAGE_KEY = 'norin_llm_sessions_v2';
+const ACTIVE_SESSION_STORAGE_KEY = 'norin_llm_active_session_id_v2';
 
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  // Load sessions from localStorage or initialize with a default one
+  const [sessions, setSessions] = useState<ChatSession[]>(() => {
+    try {
+      const saved = localStorage.getItem(SESSIONS_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      // Fallback
+    }
+    return [{
+      id: `session-${Date.now()}`,
+      title: '会話 1',
+      createdAt: Date.now(),
+      messages: [],
+      mode: 'chat',
+      aspectRatio: '1:1',
+      style: 'none',
+    }];
+  });
+
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+      if (saved && sessions.some(s => s.id === saved)) return saved;
+    } catch {
+      // Fallback
+    }
+    return sessions[0]?.id || `session-${Date.now()}`;
+  });
+
+  // Current active session
+  const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
+
+  // Save to localStorage whenever sessions change
+  useEffect(() => {
+    try {
+      localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+      localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, activeSessionId);
+    } catch {
+      // Ignore quota errors
+    }
+  }, [sessions, activeSessionId]);
+
+  // UI States
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [gpuStatus, setGpuStatus] = useState<GpuStatus | null>(null);
-  const [mode, setMode] = useState<'chat' | 'image'>('chat');
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('1:1');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isSyncingGit, setIsSyncingGit] = useState(false);
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [availableLoras, setAvailableLoras] = useState<string[]>([]);
 
   // Settings
   const [systemPrompt, setSystemPrompt] = useState('あなたは親切で有能なAIアシスタントです。画像やテキストの内容を正確に読み取り、分かりやすく日本語で回答してください。');
@@ -104,9 +179,9 @@ export default function App() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isGenerating]);
+  }, [activeSession.messages, isGenerating]);
 
-  // Poll GPU Status
+  // Poll GPU Status & fetch LoRAs
   const fetchGpuStatus = async () => {
     try {
       const res = await fetch(`${BACKEND_URL}/api/gpu`);
@@ -119,11 +194,81 @@ export default function App() {
     }
   };
 
+  const fetchLoras = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/loras`);
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableLoras(data);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
   useEffect(() => {
     fetchGpuStatus();
+    fetchLoras();
     const interval = setInterval(fetchGpuStatus, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  // Update active session helper
+  const updateActiveSession = (updater: (prev: ChatSession) => ChatSession) => {
+    setSessions(prev => prev.map(s => s.id === activeSessionId ? updater(s) : s));
+  };
+
+  // Tab management functions
+  const handleCreateNewTab = () => {
+    const newSession: ChatSession = {
+      id: `session-${Date.now()}`,
+      title: `会話 ${sessions.length + 1}`,
+      createdAt: Date.now(),
+      messages: [],
+      mode: 'chat',
+      aspectRatio: '1:1',
+      style: 'none',
+    };
+    setSessions(prev => [...prev, newSession]);
+    setActiveSessionId(newSession.id);
+  };
+
+  const handleCloseTab = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (sessions.length === 1) {
+      // If closing the only tab, reset it
+      setSessions([{
+        id: `session-${Date.now()}`,
+        title: '会話 1',
+        createdAt: Date.now(),
+        messages: [],
+        mode: 'chat',
+        aspectRatio: '1:1',
+        style: 'none',
+      }]);
+      setActiveSessionId(`session-${Date.now()}`);
+      return;
+    }
+
+    const filtered = sessions.filter(s => s.id !== id);
+    setSessions(filtered);
+    if (activeSessionId === id) {
+      setActiveSessionId(filtered[filtered.length - 1].id);
+    }
+  };
+
+  const startRenameTab = (s: ChatSession, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingTabId(s.id);
+    setEditingTitle(s.title);
+  };
+
+  const saveRenameTab = () => {
+    if (editingTabId && editingTitle.trim()) {
+      setSessions(prev => prev.map(s => s.id === editingTabId ? { ...s, title: editingTitle.trim() } : s));
+    }
+    setEditingTabId(null);
+  };
 
   // Handle Clipboard Image Paste (Ctrl+V)
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -187,11 +332,10 @@ export default function App() {
   };
 
   const toggleFeedback = (id: string, type: 'like' | 'dislike') => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.id === id ? { ...m, feedback: m.feedback === type ? null : type } : m
-      )
-    );
+    updateActiveSession(s => ({
+      ...s,
+      messages: s.messages.map(m => m.id === id ? { ...m, feedback: m.feedback === type ? null : type } : m)
+    }));
   };
 
   // Image Generation Handler
@@ -209,15 +353,26 @@ export default function App() {
       isImage: true
     };
 
-    setMessages((prev) => [...prev, userMsg, placeholderMsg]);
+    // Auto rename tab title if default
+    updateActiveSession(s => {
+      const isDefault = s.title.startsWith('会話 ') || s.title.startsWith('新規');
+      return {
+        ...s,
+        title: isDefault ? (promptText.slice(0, 14) + (promptText.length > 14 ? '...' : '')) : s.title,
+        messages: [...s.messages, userMsg, placeholderMsg]
+      };
+    });
 
     try {
-      const config = ASPECT_RATIO_CONFIG[aspectRatio];
+      const config = ASPECT_RATIO_CONFIG[activeSession.aspectRatio];
       const res = await fetch(`${BACKEND_URL}/api/generate-image`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: promptText,
+          style: activeSession.style,
+          lora_name: activeSession.loraName || null,
+          lora_weight: 1.0,
           steps: imageSteps,
           guidance_scale: 0.0,
           width: config.width,
@@ -232,8 +387,8 @@ export default function App() {
 
       const data = await res.json();
 
-      setMessages((prev) => {
-        const updated = [...prev];
+      updateActiveSession(s => {
+        const updated = [...s.messages];
         updated[updated.length - 1] = {
           ...updated[updated.length - 1],
           content: `プロンプト: ${data.prompt}`,
@@ -244,19 +399,21 @@ export default function App() {
             steps: data.steps,
             elapsed_seconds: data.elapsed_seconds,
             width: data.width || config.width,
-            height: data.height || config.height
+            height: data.height || config.height,
+            style: data.style,
+            style_name: data.style_name
           }
         };
-        return updated;
+        return { ...s, messages: updated };
       });
     } catch (err: any) {
-      setMessages((prev) => {
-        const updated = [...prev];
+      updateActiveSession(s => {
+        const updated = [...s.messages];
         updated[updated.length - 1] = {
           ...updated[updated.length - 1],
           content: `⚠️ 画像生成エラー: ${err.message || '生成に失敗しました'}`
         };
-        return updated;
+        return { ...s, messages: updated };
       });
     } finally {
       setIsGenerating(false);
@@ -273,12 +430,20 @@ export default function App() {
       images: attachedImages.length > 0 ? attachedImages : undefined
     };
 
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setIsGenerating(true);
-
     const assistantMsgId = `ai-${Date.now()}`;
-    setMessages((prev) => [...prev, { id: assistantMsgId, role: 'assistant', content: '' }]);
+    const newMessages = [...activeSession.messages, userMsg];
+
+    // Auto rename tab title if default
+    updateActiveSession(s => {
+      const isDefault = s.title.startsWith('会話 ') || s.title.startsWith('新規');
+      return {
+        ...s,
+        title: isDefault ? (userText.slice(0, 14) + (userText.length > 14 ? '...' : '')) : s.title,
+        messages: [...newMessages, { id: assistantMsgId, role: 'assistant', content: '' }]
+      };
+    });
+
+    setIsGenerating(true);
 
     const requestPayload = {
       messages: [
@@ -328,14 +493,14 @@ export default function App() {
               const data = JSON.parse(jsonStr);
               if (data.token) {
                 assistantText += data.token;
-                setMessages((prev) => {
-                  const updated = [...prev];
+                updateActiveSession(s => {
+                  const updated = [...s.messages];
                   const lastIdx = updated.length - 1;
                   updated[lastIdx] = {
                     ...updated[lastIdx],
                     content: assistantText
                   };
-                  return updated;
+                  return { ...s, messages: updated };
                 });
               }
               if (data.done) break;
@@ -346,14 +511,14 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      setMessages((prev) => {
-        const updated = [...prev];
+      updateActiveSession(s => {
+        const updated = [...s.messages];
         const lastIdx = updated.length - 1;
         updated[lastIdx] = {
           ...updated[lastIdx],
           content: `⚠️ エラーが発生しました: ${err.message || '推論サーバーと通信できませんでした。'}`
         };
-        return updated;
+        return { ...s, messages: updated };
       });
     } finally {
       setIsGenerating(false);
@@ -363,15 +528,15 @@ export default function App() {
 
   // Regenerate last assistant response
   const handleRegenerate = () => {
-    if (isGenerating || messages.length < 2) return;
-    const lastUserIdx = [...messages].reverse().findIndex((m) => m.role === 'user');
+    if (isGenerating || activeSession.messages.length < 2) return;
+    const msgs = activeSession.messages;
+    const lastUserIdx = [...msgs].reverse().findIndex((m) => m.role === 'user');
     if (lastUserIdx === -1) return;
-    const actualUserIdx = messages.length - 1 - lastUserIdx;
-    const lastUserMsg = messages[actualUserIdx];
+    const actualUserIdx = msgs.length - 1 - lastUserIdx;
+    const lastUserMsg = msgs[actualUserIdx];
 
-    // Remove responses after that user message
-    const trimmedMessages = messages.slice(0, actualUserIdx);
-    setMessages(trimmedMessages);
+    const trimmed = msgs.slice(0, actualUserIdx);
+    updateActiveSession(s => ({ ...s, messages: trimmed }));
 
     if (lastUserMsg.isImage || lastUserMsg.content.startsWith('[画像生成]')) {
       const cleanPrompt = lastUserMsg.content.replace('[画像生成]', '').trim();
@@ -389,7 +554,7 @@ export default function App() {
     setInput('');
     setAttachments([]);
 
-    if (mode === 'image' || text.startsWith('/image ')) {
+    if (activeSession.mode === 'image' || text.startsWith('/image ')) {
       const cleanPrompt = text.startsWith('/image ') ? text.replace('/image ', '').trim() : text;
       handleImageGenerate(cleanPrompt);
     } else {
@@ -408,7 +573,7 @@ export default function App() {
   const handleGitSync = async () => {
     setIsSyncingGit(true);
     try {
-      const generatedImages = messages
+      const generatedImages = activeSession.messages
         .filter((m) => m.isImage && m.imageUrl)
         .map((m) => m.imageUrl!);
 
@@ -417,7 +582,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           image_data_urls: generatedImages,
-          commit_message: `feat(outputs): sync ${generatedImages.length} generated images from studio`
+          commit_message: `feat(outputs): sync ${generatedImages.length} generated images from tab "${activeSession.title}"`
         })
       });
 
@@ -432,7 +597,7 @@ export default function App() {
   };
 
   const clearChat = () => {
-    setMessages([]);
+    updateActiveSession(s => ({ ...s, messages: [] }));
     setAttachments([]);
   };
 
@@ -490,7 +655,7 @@ export default function App() {
           <div className="models-list">
             <div className="model-item">
               <span>👁️ Vision LLM:</span>
-              <span style={{ color: '#e5e7eb' }}>Qwen2-VL-2B (Multimodal)</span>
+              <span style={{ color: '#e5e7eb' }}>Qwen2-VL-2B</span>
             </div>
             <div className="model-item">
               <span>🎨 Image Gen:</span>
@@ -500,7 +665,7 @@ export default function App() {
         </div>
 
         {/* LLM Settings */}
-        {mode === 'chat' && (
+        {activeSession.mode === 'chat' && (
           <>
             <div className="param-group">
               <div className="param-label">
@@ -550,8 +715,45 @@ export default function App() {
         )}
 
         {/* Image Generation Settings */}
-        {mode === 'image' && (
+        {activeSession.mode === 'image' && (
           <>
+            <div className="param-group">
+              <div className="param-label">
+                <span>画風スタイル (Style)</span>
+              </div>
+              <select
+                className="style-select"
+                value={activeSession.style}
+                onChange={(e) => updateActiveSession(s => ({ ...s, style: e.target.value }))}
+              >
+                {STYLE_PRESETS.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {availableLoras.length > 0 && (
+              <div className="param-group">
+                <div className="param-label">
+                  <span>画風学習 LoRA</span>
+                </div>
+                <select
+                  className="style-select"
+                  value={activeSession.loraName || ''}
+                  onChange={(e) => updateActiveSession(s => ({ ...s, loraName: e.target.value || undefined }))}
+                >
+                  <option value="">なし (標準)</option>
+                  {availableLoras.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="param-group">
               <div className="param-label">
                 <span>縦横比 (Aspect Ratio)</span>
@@ -561,15 +763,15 @@ export default function App() {
                   <button
                     key={ratio}
                     type="button"
-                    className={`aspect-ratio-btn ${aspectRatio === ratio ? 'active' : ''}`}
-                    onClick={() => setAspectRatio(ratio)}
+                    className={`aspect-ratio-btn ${activeSession.aspectRatio === ratio ? 'active' : ''}`}
+                    onClick={() => updateActiveSession(s => ({ ...s, aspectRatio: ratio }))}
                   >
                     {ratio}
                   </button>
                 ))}
               </div>
               <div className="aspect-ratio-info">
-                <span>{ASPECT_RATIO_CONFIG[aspectRatio].desc}</span>
+                <span>{ASPECT_RATIO_CONFIG[activeSession.aspectRatio].desc}</span>
               </div>
             </div>
 
@@ -618,7 +820,7 @@ export default function App() {
         {/* Header */}
         <header className="chat-header">
           <div className="chat-title">
-            <Sparkles size={20} color={mode === 'chat' ? '#10b981' : '#8b5cf6'} />
+            <Sparkles size={20} color={activeSession.mode === 'chat' ? '#10b981' : '#8b5cf6'} />
             <span>Vision LLM & Image Studio (RTX 4070 Ti)</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.85rem', color: '#9ca3af' }}>
@@ -627,33 +829,92 @@ export default function App() {
           </div>
         </header>
 
+        {/* Conversation Tabs Bar */}
+        <div className="tabs-bar">
+          {sessions.map((s) => (
+            <div
+              key={s.id}
+              className={`tab-item ${s.id === activeSessionId ? 'active' : ''}`}
+              onClick={() => setActiveSessionId(s.id)}
+            >
+              {editingTabId === s.id ? (
+                <input
+                  type="text"
+                  value={editingTitle}
+                  onChange={(e) => setEditingTitle(e.target.value)}
+                  onBlur={saveRenameTab}
+                  onKeyDown={(e) => e.key === 'Enter' && saveRenameTab()}
+                  autoFocus
+                  style={{
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid #3b82f6',
+                    color: 'white',
+                    fontSize: '0.8rem',
+                    padding: '2px 4px',
+                    borderRadius: '4px',
+                    outline: 'none',
+                    width: '100px'
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span
+                  className="tab-title"
+                  onDoubleClick={(e) => startRenameTab(s, e)}
+                  title="ダブルクリックでタイトルを変更"
+                >
+                  {s.mode === 'image' ? '🎨 ' : '💬 '}
+                  {s.title}
+                </span>
+              )}
+
+              <button
+                className="tab-close-btn"
+                onClick={(e) => handleCloseTab(s.id, e)}
+                title="タブを閉じる"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+
+          <button
+            className="tab-new-btn"
+            onClick={handleCreateNewTab}
+            title="新しい会話タブを作成"
+          >
+            <Plus size={14} />
+            <span>新しいタブ</span>
+          </button>
+        </div>
+
         {/* Messages */}
         <div className="chat-messages">
-          {messages.length === 0 ? (
+          {activeSession.messages.length === 0 ? (
             <div className="empty-chat">
-              {mode === 'chat' ? (
+              {activeSession.mode === 'chat' ? (
                 <Bot className="empty-icon" />
               ) : (
                 <ImageIcon className="empty-icon" style={{ color: '#8b5cf6' }} />
               )}
               <h3>
-                {mode === 'chat'
+                {activeSession.mode === 'chat'
                   ? 'マルチモーダル Vision AI アシスタント'
                   : '高速ローカル画像生成スタジオ'}
               </h3>
               <p>
-                {mode === 'chat'
+                {activeSession.mode === 'chat'
                   ? 'テキストの会話はもちろん、画像を貼り付け（Ctrl+V）または添付すると、AIが画像を視覚的に認識して解説します。'
                   : 'SD-Turbo を使用し、RTX 4070 Ti の圧倒的なパワーでわずか1秒未満で画像を生成します。'}
               </p>
               <p style={{ fontSize: '0.85rem' }}>
-                {mode === 'chat'
+                {activeSession.mode === 'chat'
                   ? '下のクリップボタンまたは Ctrl+V でスクリーンショットを直接貼り付けて質問できます。'
-                  : '生成したい画像のプロンプトを入力してください。'}
+                  : '生成したい画像のプロンプトを入力してください。画風や縦横比も選べます。'}
               </p>
             </div>
           ) : (
-            messages.map((msg) => (
+            activeSession.messages.map((msg) => (
               <div key={msg.id} className={`message-row ${msg.role === 'user' ? 'user' : 'ai'}`}>
                 {msg.role !== 'user' && (
                   <div className={`message-avatar ${msg.isImage ? 'avatar-image-ai' : 'avatar-ai'}`}>
@@ -692,7 +953,7 @@ export default function App() {
                         />
                         <div className="image-meta-bar">
                           <span>
-                            ⏱️ {msg.imageMeta?.elapsed_seconds}s | {msg.imageMeta?.width}×{msg.imageMeta?.height} | Steps: {msg.imageMeta?.steps} | Seed: {msg.imageMeta?.seed}
+                            ⏱️ {msg.imageMeta?.elapsed_seconds}s | {msg.imageMeta?.width}×{msg.imageMeta?.height} | {msg.imageMeta?.style_name || '標準'}
                           </span>
                           <div style={{ display: 'flex', gap: 6 }}>
                             <button
@@ -717,14 +978,14 @@ export default function App() {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                           {msg.content}
                         </ReactMarkdown>
-                        {isGenerating && msg.id === messages[messages.length - 1]?.id && (
+                        {isGenerating && msg.id === activeSession.messages[activeSession.messages.length - 1]?.id && (
                           <span className="cursor-blink" />
                         )}
                       </>
                     )}
                   </div>
 
-                  {/* AI Response Action Toolbar (Like ChatGPT / Reference image) */}
+                  {/* AI Response Action Toolbar */}
                   {msg.role === 'assistant' && !msg.isImage && msg.content && (
                     <div className="message-action-bar">
                       <button
@@ -776,41 +1037,61 @@ export default function App() {
 
         {/* Input Form Area */}
         <div className="chat-input-container">
-          {/* Mode Switch Tabs & Aspect Ratio Controls */}
+          {/* Mode Switch Tabs & Controls */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <div className="mode-tabs">
               <button
-                className={`mode-tab ${mode === 'chat' ? 'active-chat' : ''}`}
-                onClick={() => setMode('chat')}
+                className={`mode-tab ${activeSession.mode === 'chat' ? 'active-chat' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'chat' }))}
               >
                 <MessageSquare size={14} />
-                <span>対話 & 画像認識 (Vision)</span>
+                <span>対話 & 画像認識</span>
               </button>
               <button
-                className={`mode-tab ${mode === 'image' ? 'active-image' : ''}`}
-                onClick={() => setMode('image')}
+                className={`mode-tab ${activeSession.mode === 'image' ? 'active-image' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'image' }))}
               >
                 <ImageIcon size={14} />
                 <span>画像生成 (SD-Turbo)</span>
               </button>
             </div>
 
-            {mode === 'image' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>比率:</span>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  {(Object.keys(ASPECT_RATIO_CONFIG) as AspectRatio[]).map((ratio) => (
-                    <button
-                      key={ratio}
-                      type="button"
-                      className={`aspect-ratio-btn ${aspectRatio === ratio ? 'active' : ''}`}
-                      onClick={() => setAspectRatio(ratio)}
-                      style={{ padding: '3px 8px', fontSize: '0.75rem' }}
-                      title={ASPECT_RATIO_CONFIG[ratio].desc}
-                    >
-                      {ratio}
-                    </button>
-                  ))}
+            {activeSession.mode === 'image' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                {/* Style Preset Selector */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Palette size={14} color="#c4b5fd" />
+                  <select
+                    className="style-select"
+                    value={activeSession.style}
+                    onChange={(e) => updateActiveSession(s => ({ ...s, style: e.target.value }))}
+                    style={{ padding: '3px 6px', fontSize: '0.75rem' }}
+                  >
+                    {STYLE_PRESETS.map((p) => (
+                      <option key={p.key} value={p.key}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Aspect Ratio Selector */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>比率:</span>
+                  <div style={{ display: 'flex', gap: 3 }}>
+                    {(Object.keys(ASPECT_RATIO_CONFIG) as AspectRatio[]).map((ratio) => (
+                      <button
+                        key={ratio}
+                        type="button"
+                        className={`aspect-ratio-btn ${activeSession.aspectRatio === ratio ? 'active' : ''}`}
+                        onClick={() => updateActiveSession(s => ({ ...s, aspectRatio: ratio }))}
+                        style={{ padding: '3px 6px', fontSize: '0.75rem', minWidth: '40px' }}
+                        title={ASPECT_RATIO_CONFIG[ratio].desc}
+                      >
+                        {ratio}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
@@ -835,9 +1116,9 @@ export default function App() {
             </div>
           )}
 
-          <div className={`chat-input-box ${mode === 'image' ? 'image-mode-focus' : ''}`}>
+          <div className={`chat-input-box ${activeSession.mode === 'image' ? 'image-mode-focus' : ''}`}>
             {/* Attachment Button for Vision Mode */}
-            {mode === 'chat' && (
+            {activeSession.mode === 'chat' && (
               <>
                 <button
                   type="button"
@@ -862,8 +1143,8 @@ export default function App() {
               ref={textareaRef}
               className="chat-textarea"
               placeholder={
-                mode === 'image'
-                  ? '生成したい画像のプロンプトを入力 (英語推奨, 例: A majestic dragon flying over mountains)...'
+                activeSession.mode === 'image'
+                  ? '生成したい画像のプロンプトを入力 (英語推奨, 画風と比率は上で選択可能)...'
                   : 'メッセージを入力... (画像はCtrl+Vで貼り付け可能 / Shift+Enterで改行)'
               }
               value={input}
@@ -873,12 +1154,12 @@ export default function App() {
               rows={2}
             />
             <button
-              className={`send-button ${mode === 'image' ? 'image-send' : ''}`}
+              className={`send-button ${activeSession.mode === 'image' ? 'image-send' : ''}`}
               onClick={handleSubmit}
               disabled={isGenerating || (!input.trim() && attachments.length === 0) || gpuStatus?.is_loading}
-              title={mode === 'image' ? '画像を生成' : 'メッセージ送信'}
+              title={activeSession.mode === 'image' ? '画像を生成' : 'メッセージ送信'}
             >
-              {mode === 'image' ? <ImageIcon size={18} /> : <Send size={18} />}
+              {activeSession.mode === 'image' ? <ImageIcon size={18} /> : <Send size={18} />}
             </button>
           </div>
 

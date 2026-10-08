@@ -5,6 +5,7 @@ torchaudio
 transformers>=4.48.0
 accelerate>=1.2.0
 diffusers>=0.30.0
+peft>=0.14.0
 qwen-vl-utils>=0.0.14
 fastapi>=0.115.0
 uvicorn>=0.34.0

@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from model_engine import engine, DEFAULT_MODEL_ID
-from image_engine import image_engine
+from image_engine import image_engine, STYLE_PRESETS
 
 # Lifespan event to automatically load Vision LLM model at startup
 @asynccontextmanager
@@ -48,6 +48,9 @@ class ModelLoadRequest(BaseModel):
 
 class ImageGenerateRequest(BaseModel):
     prompt: str = Field(..., description="Text prompt for image generation")
+    style: Optional[str] = Field(default="none", description="Style preset key (e.g. anime, watercolor, etc.)")
+    lora_name: Optional[str] = Field(default=None, description="Optional LoRA file name")
+    lora_weight: float = Field(default=1.0, ge=0.0, le=2.0)
     steps: int = Field(default=1, ge=1, le=8, description="Inference steps (1-4 recommended for SD-Turbo)")
     guidance_scale: float = Field(default=0.0, ge=0.0, le=5.0)
     seed: Optional[int] = Field(default=None)
@@ -150,11 +153,25 @@ async def chat_stream(request: ChatRequest):
         }
     )
 
+@app.get("/api/styles")
+def get_styles_endpoint():
+    return [
+        {"key": k, "name": v["name"]}
+        for k, v in STYLE_PRESETS.items()
+    ]
+
+@app.get("/api/loras")
+def get_loras_endpoint():
+    return image_engine.get_available_loras()
+
 @app.post("/api/generate-image")
 async def generate_image_endpoint(req: ImageGenerateRequest):
     try:
         result = image_engine.generate(
             prompt=req.prompt,
+            style=req.style or "none",
+            lora_name=req.lora_name,
+            lora_weight=req.lora_weight,
             num_inference_steps=req.steps,
             guidance_scale=req.guidance_scale,
             seed=req.seed,

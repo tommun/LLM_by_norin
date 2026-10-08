@@ -266,11 +266,111 @@ body {
 }
 
 .chat-header {
-  padding: 14px 24px;
+  padding: 12px 20px;
   border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+/* Session Tabs Bar */
+.tabs-bar {
+  display: flex;
+  align-items: center;
+  background-color: #131620;
+  border-bottom: 1px solid var(--border-color);
+  padding: 0 12px;
+  gap: 4px;
+  overflow-x: auto;
+  min-height: 40px;
+}
+
+.tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background-color: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  max-width: 200px;
+  white-space: nowrap;
+}
+
+.tab-item:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+}
+
+.tab-item.active {
+  background-color: var(--bg-primary);
+  color: #60a5fa;
+  border-bottom-color: #3b82f6;
+  font-weight: 600;
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.15s;
+}
+
+.tab-close-btn:hover {
+  background-color: rgba(239, 68, 68, 0.2);
+  color: var(--danger);
+}
+
+.tab-new-btn {
+  background: transparent;
+  border: 1px dashed #4b5563;
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  margin-left: 4px;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.tab-new-btn:hover {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: #3b82f6;
+  color: #60a5fa;
+}
+
+.style-select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  outline: none;
+  cursor: pointer;
 }
 
 .chat-title {
