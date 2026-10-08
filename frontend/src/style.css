@@ -52,7 +52,7 @@ body {
   display: flex;
   flex-direction: column;
   padding: 16px;
-  gap: 18px;
+  gap: 16px;
   overflow-y: auto;
 }
 
@@ -207,6 +207,34 @@ body {
   accent-color: var(--image-accent);
 }
 
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.git-sync-btn {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid #3b82f6;
+  color: #60a5fa;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.2s;
+}
+
+.git-sync-btn:hover {
+  background: #3b82f6;
+  color: white;
+}
+
 .clear-btn {
   background: transparent;
   border: 1px solid var(--border-color);
@@ -220,7 +248,6 @@ body {
   justify-content: center;
   gap: 6px;
   transition: all 0.2s;
-  margin-top: auto;
 }
 
 .clear-btn:hover {
@@ -291,6 +318,17 @@ body {
   justify-content: flex-end;
 }
 
+.message-content-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 80%;
+}
+
+.message-row.user .message-content-wrapper {
+  align-items: flex-end;
+}
+
 .message-avatar {
   width: 34px;
   height: 34px;
@@ -318,8 +356,17 @@ body {
   color: white;
 }
 
+.user-attached-image {
+  max-width: 280px;
+  max-height: 200px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid var(--border-color);
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
 .message-bubble {
-  max-width: 80%;
   padding: 14px 18px;
   border-radius: 12px;
   line-height: 1.6;
@@ -377,6 +424,37 @@ body {
   50% { opacity: 0; }
 }
 
+/* Response Action Toolbar (Like ChatGPT / Claude) */
+.message-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 4px;
+  color: var(--text-muted);
+}
+
+.action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.action-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-main);
+}
+
+.action-btn.active {
+  color: var(--accent);
+}
+
 /* Generated Image Card */
 .generated-image-card {
   display: flex;
@@ -431,6 +509,48 @@ body {
   background-color: var(--image-accent-hover);
 }
 
+/* Attachment Preview Bar */
+.attachment-preview-bar {
+  display: flex;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  border: 1px dashed #4b5563;
+  margin-bottom: 6px;
+  align-items: center;
+}
+
+.attachment-chip {
+  position: relative;
+  display: inline-block;
+}
+
+.attachment-thumb {
+  width: 50px;
+  height: 50px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--border-color);
+}
+
+.attachment-remove-btn {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: var(--danger);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
 /* Chat Input Form */
 .chat-input-container {
   padding: 12px 24px 16px;
@@ -481,7 +601,7 @@ body {
 
 .chat-input-box {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   align-items: flex-end;
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
@@ -496,6 +616,26 @@ body {
 
 .chat-input-box:focus-within {
   border-color: #60a5fa;
+}
+
+.attach-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.attach-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .chat-textarea {

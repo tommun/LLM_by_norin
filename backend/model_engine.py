@@ -2,17 +2,18 @@ import os
 import sys
 import threading
 import time
-from typing import AsyncGenerator, Dict, Any, Optional
+from typing import AsyncGenerator, Dict, Any, Optional, List
 import psutil
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, TextIteratorStreamer
+from qwen_vl_utils import process_vision_info
 
-DEFAULT_MODEL_ID = "Qwen/Qwen2.5-3B-Instruct"
+DEFAULT_MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 
 class LLMEngine:
     def __init__(self, model_id: str = DEFAULT_MODEL_ID):
         self.model_id = model_id
-        self.tokenizer = None
+        self.processor = None
         self.model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.is_loading = False
@@ -58,11 +59,11 @@ class LLMEngine:
 
             self.is_loading = True
             self.last_error = None
-            print(f"[LLMEngine] Loading model: {self.model_id} on {self.device}...")
+            print(f"[LLMEngine] Loading Vision-Language Model: {self.model_id} on {self.device}...")
 
             try:
-                # Tokenizer loading
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                # Processor loading (Tokenizer + Image Processor)
+                self.processor = AutoProcessor.from_pretrained(
                     self.model_id,
                     trust_remote_code=True
                 )
@@ -73,7 +74,7 @@ class LLMEngine:
 
                 print(f"[LLMEngine] Using dtype: {dtype}")
 
-                self.model = AutoModelForCausalLM.from_pretrained(
+                self.model = Qwen2VLForConditionalGeneration.from_pretrained(
                     self.model_id,
                     torch_dtype=dtype,
                     device_map="auto" if torch.cuda.is_available() else None,
@@ -87,13 +88,13 @@ class LLMEngine:
                 self.model.eval()
                 self.is_ready = True
                 self.is_loading = False
-                print(f"[LLMEngine] Model {self.model_id} successfully loaded and ready on {self.device}!")
+                print(f"[LLMEngine] Vision Model {self.model_id} successfully loaded and ready on {self.device}!")
                 return True
             except Exception as e:
                 self.is_ready = False
                 self.is_loading = False
                 self.last_error = str(e)
-                print(f"[LLMEngine] Error loading model: {e}", file=sys.stderr)
+                print(f"[LLMEngine] Error loading vision model: {e}", file=sys.stderr)
                 return False
 
     def stream_generate(
@@ -103,37 +104,66 @@ class LLMEngine:
         temperature: float = 0.7,
         top_p: float = 0.9,
     ):
-        if not self.is_ready or self.model is None or self.tokenizer is None:
-            raise RuntimeError("Model is not loaded. Please wait for model loading or trigger /load.")
+        if not self.is_ready or self.model is None or self.processor is None:
+            raise RuntimeError("Vision Model is not loaded. Please wait for model loading.")
 
-        # Prepare chat template
-        text = self.tokenizer.apply_chat_template(
-            messages,
+        # Transform messages into multimodal format
+        formatted_messages = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content_list = []
+
+            # If message contains images
+            images = msg.get("images", [])
+            for img_url in images:
+                content_list.append({"type": "image", "image": img_url})
+
+            # Text content
+            text_str = msg.get("content", "")
+            if text_str:
+                content_list.append({"type": "text", "text": text_str})
+
+            # If neither image nor text, skip or provide empty text
+            if not content_list:
+                content_list.append({"type": "text", "text": ""})
+
+            formatted_messages.append({"role": role, "content": content_list})
+
+        # Apply chat template
+        text = self.processor.apply_chat_template(
+            formatted_messages,
             tokenize=False,
             add_generation_prompt=True
         )
 
-        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
+        image_inputs, video_inputs = process_vision_info(formatted_messages)
+
+        inputs = self.processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt"
+        ).to(self.device)
 
         streamer = TextIteratorStreamer(
-            self.tokenizer,
+            self.processor.tokenizer,
             timeout=60.0,
             skip_prompt=True,
             skip_special_tokens=True
         )
 
         generate_kwargs = dict(
-            **model_inputs,
+            **inputs,
             streamer=streamer,
             max_new_tokens=max_new_tokens,
             temperature=temperature if temperature > 0 else None,
             do_sample=True if temperature > 0 else False,
             top_p=top_p if temperature > 0 else None,
             repetition_penalty=1.1,
-            pad_token_id=self.tokenizer.eos_token_id
+            pad_token_id=self.processor.tokenizer.eos_token_id
         )
 
-        # Run generation in a separate thread to allow generator streaming
         thread = threading.Thread(target=self.model.generate, kwargs=generate_kwargs)
         thread.start()
 
