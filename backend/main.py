@@ -9,16 +9,17 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from model_engine import engine, DEFAULT_MODEL_ID
+from image_engine import image_engine
 
-# Lifespan event to automatically load model at startup
+# Lifespan event to automatically load LLM model at startup
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start loading the model in a background thread so the server starts immediately
+    # Start loading the LLM model in background
     loader_thread = threading.Thread(target=engine.load_model, daemon=True)
     loader_thread.start()
     yield
 
-app = FastAPI(title="Local GPU LLM Engine API", lifespan=lifespan)
+app = FastAPI(title="Local GPU LLM & Image Gen Engine API", lifespan=lifespan)
 
 # Allow CORS for local frontend
 app.add_middleware(
@@ -42,20 +43,33 @@ class ChatRequest(BaseModel):
 class ModelLoadRequest(BaseModel):
     model_id: str = Field(default=DEFAULT_MODEL_ID)
 
+class ImageGenerateRequest(BaseModel):
+    prompt: str = Field(..., description="Text prompt for image generation")
+    steps: int = Field(default=1, ge=1, le=8, description="Inference steps (1-4 recommended for SD-Turbo)")
+    guidance_scale: float = Field(default=0.0, ge=0.0, le=5.0, description="Guidance scale (0.0 for SD-Turbo)")
+    seed: Optional[int] = Field(default=None, description="Random seed")
+    width: int = Field(default=512, ge=256, le=768)
+    height: int = Field(default=512, ge=256, le=768)
+
 @app.get("/")
 def read_root():
+    gpu_info = engine.get_gpu_info()
     return {
-        "service": "Local GPU LLM Assistant Backend",
-        "gpu": engine.get_gpu_info()["device_name"],
-        "cuda_available": engine.get_gpu_info()["cuda_available"],
-        "model_loaded": engine.is_ready,
-        "is_loading": engine.is_loading,
+        "service": "Local GPU LLM & Image Assistant Backend",
+        "gpu": gpu_info["device_name"],
+        "cuda_available": gpu_info["cuda_available"],
+        "llm_loaded": engine.is_ready,
+        "image_gen_loaded": image_engine.is_ready,
     }
 
 @app.get("/api/gpu")
 @app.get("/api/status")
 def get_status():
-    return engine.get_gpu_info()
+    status = engine.get_gpu_info()
+    status["image_model_id"] = image_engine.model_id
+    status["image_model_loaded"] = image_engine.is_ready
+    status["image_is_loading"] = image_engine.is_loading
+    return status
 
 @app.post("/api/model/load")
 def load_model_endpoint(req: ModelLoadRequest, background_tasks: BackgroundTasks):
@@ -75,7 +89,6 @@ async def chat_non_stream(request: ChatRequest):
 
     try:
         messages_dict = [{"role": m.role, "content": m.content} for m in request.messages]
-        # Collect full stream response
         full_response = ""
         for token in engine.stream_generate(
             messages=messages_dict,
@@ -109,7 +122,6 @@ async def chat_stream(request: ChatRequest):
             ):
                 data = json.dumps({"token": token, "done": False}, ensure_ascii=False)
                 yield f"data: {data}\n\n"
-            # Signal completion
             yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
         except Exception as e:
             error_data = json.dumps({"error": str(e), "done": True}, ensure_ascii=False)
@@ -124,6 +136,21 @@ async def chat_stream(request: ChatRequest):
             "X-Accel-Buffering": "no",
         }
     )
+
+@app.post("/api/generate-image")
+async def generate_image_endpoint(req: ImageGenerateRequest):
+    try:
+        result = image_engine.generate(
+            prompt=req.prompt,
+            num_inference_steps=req.steps,
+            guidance_scale=req.guidance_scale,
+            seed=req.seed,
+            width=req.width,
+            height=req.height
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
