@@ -39,6 +39,8 @@ interface Message {
     seed: number;
     steps: number;
     elapsed_seconds: number;
+    width?: number;
+    height?: number;
   };
   feedback?: 'like' | 'dislike' | null;
 }
@@ -62,6 +64,16 @@ interface GpuStatus {
   image_is_loading?: boolean;
 }
 
+type AspectRatio = '1:1' | '16:9' | '9:16' | '4:3' | '3:4';
+
+const ASPECT_RATIO_CONFIG: Record<AspectRatio, { label: string; width: number; height: number; desc: string }> = {
+  '1:1': { label: '1:1', width: 512, height: 512, desc: '正方形 (512×512)' },
+  '16:9': { label: '16:9', width: 640, height: 360, desc: 'ワイド横長 (640×360)' },
+  '9:16': { label: '9:16', width: 360, height: 640, desc: 'スマホ縦長 (360×640)' },
+  '4:3': { label: '4:3', width: 576, height: 432, desc: '写真横長 (576×432)' },
+  '3:4': { label: '3:4', width: 432, height: 576, desc: 'ポスター縦長 (432×576)' },
+};
+
 const BACKEND_URL = 'http://localhost:8000';
 
 export default function App() {
@@ -71,6 +83,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [gpuStatus, setGpuStatus] = useState<GpuStatus | null>(null);
   const [mode, setMode] = useState<'chat' | 'image'>('chat');
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('1:1');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isSyncingGit, setIsSyncingGit] = useState(false);
@@ -199,6 +212,7 @@ export default function App() {
     setMessages((prev) => [...prev, userMsg, placeholderMsg]);
 
     try {
+      const config = ASPECT_RATIO_CONFIG[aspectRatio];
       const res = await fetch(`${BACKEND_URL}/api/generate-image`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -206,8 +220,8 @@ export default function App() {
           prompt: promptText,
           steps: imageSteps,
           guidance_scale: 0.0,
-          width: 512,
-          height: 512
+          width: config.width,
+          height: config.height
         })
       });
 
@@ -228,7 +242,9 @@ export default function App() {
           imageMeta: {
             seed: data.seed,
             steps: data.steps,
-            elapsed_seconds: data.elapsed_seconds
+            elapsed_seconds: data.elapsed_seconds,
+            width: data.width || config.width,
+            height: data.height || config.height
           }
         };
         return updated;
@@ -538,6 +554,27 @@ export default function App() {
           <>
             <div className="param-group">
               <div className="param-label">
+                <span>縦横比 (Aspect Ratio)</span>
+              </div>
+              <div className="aspect-ratio-selector">
+                {(Object.keys(ASPECT_RATIO_CONFIG) as AspectRatio[]).map((ratio) => (
+                  <button
+                    key={ratio}
+                    type="button"
+                    className={`aspect-ratio-btn ${aspectRatio === ratio ? 'active' : ''}`}
+                    onClick={() => setAspectRatio(ratio)}
+                  >
+                    {ratio}
+                  </button>
+                ))}
+              </div>
+              <div className="aspect-ratio-info">
+                <span>{ASPECT_RATIO_CONFIG[aspectRatio].desc}</span>
+              </div>
+            </div>
+
+            <div className="param-group">
+              <div className="param-label">
                 <span>Inference Steps</span>
                 <span>{imageSteps} Step(s)</span>
               </div>
@@ -553,13 +590,6 @@ export default function App() {
               <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
                 SD-Turboは1ステップで最高速（約0.5秒）に生成されます。
               </span>
-            </div>
-
-            <div className="param-group">
-              <div className="param-label">
-                <span>Resolution</span>
-                <span>512 x 512 px</span>
-              </div>
             </div>
           </>
         )}
@@ -662,7 +692,7 @@ export default function App() {
                         />
                         <div className="image-meta-bar">
                           <span>
-                            ⏱️ {msg.imageMeta?.elapsed_seconds}s | Steps: {msg.imageMeta?.steps} | Seed: {msg.imageMeta?.seed}
+                            ⏱️ {msg.imageMeta?.elapsed_seconds}s | {msg.imageMeta?.width}×{msg.imageMeta?.height} | Steps: {msg.imageMeta?.steps} | Seed: {msg.imageMeta?.seed}
                           </span>
                           <div style={{ display: 'flex', gap: 6 }}>
                             <button
@@ -746,22 +776,44 @@ export default function App() {
 
         {/* Input Form Area */}
         <div className="chat-input-container">
-          {/* Mode Switch Tabs */}
-          <div className="mode-tabs">
-            <button
-              className={`mode-tab ${mode === 'chat' ? 'active-chat' : ''}`}
-              onClick={() => setMode('chat')}
-            >
-              <MessageSquare size={14} />
-              <span>対話 & 画像認識 (Vision)</span>
-            </button>
-            <button
-              className={`mode-tab ${mode === 'image' ? 'active-image' : ''}`}
-              onClick={() => setMode('image')}
-            >
-              <ImageIcon size={14} />
-              <span>画像生成 (SD-Turbo)</span>
-            </button>
+          {/* Mode Switch Tabs & Aspect Ratio Controls */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div className="mode-tabs">
+              <button
+                className={`mode-tab ${mode === 'chat' ? 'active-chat' : ''}`}
+                onClick={() => setMode('chat')}
+              >
+                <MessageSquare size={14} />
+                <span>対話 & 画像認識 (Vision)</span>
+              </button>
+              <button
+                className={`mode-tab ${mode === 'image' ? 'active-image' : ''}`}
+                onClick={() => setMode('image')}
+              >
+                <ImageIcon size={14} />
+                <span>画像生成 (SD-Turbo)</span>
+              </button>
+            </div>
+
+            {mode === 'image' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>比率:</span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {(Object.keys(ASPECT_RATIO_CONFIG) as AspectRatio[]).map((ratio) => (
+                    <button
+                      key={ratio}
+                      type="button"
+                      className={`aspect-ratio-btn ${aspectRatio === ratio ? 'active' : ''}`}
+                      onClick={() => setAspectRatio(ratio)}
+                      style={{ padding: '3px 8px', fontSize: '0.75rem' }}
+                      title={ASPECT_RATIO_CONFIG[ratio].desc}
+                    >
+                      {ratio}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Attachment Preview Chips */}

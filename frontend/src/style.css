@@ -470,9 +470,10 @@ body {
 .image-preview {
   width: 100%;
   max-width: 512px;
-  aspect-ratio: 1;
+  max-height: 512px;
   border-radius: 8px;
-  object-fit: cover;
+  object-fit: contain;
+  background-color: #0b0d13;
   cursor: pointer;
   transition: transform 0.2s;
   box-shadow: 0 4px 12px rgba(0,0,0,0.3);
@@ -480,6 +481,52 @@ body {
 
 .image-preview:hover {
   transform: scale(1.01);
+}
+
+/* Aspect Ratio Selector */
+.aspect-ratio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aspect-ratio-selector {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aspect-ratio-btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex: 1;
+  min-width: 48px;
+  text-align: center;
+}
+
+.aspect-ratio-btn:hover {
+  border-color: #6b7280;
+  color: var(--text-main);
+}
+
+.aspect-ratio-btn.active {
+  background: rgba(139, 92, 246, 0.2);
+  border-color: var(--image-accent);
+  color: #c4b5fd;
+}
+
+.aspect-ratio-info {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  display: flex;
+  justify-content: space-between;
 }
 
 .image-meta-bar {

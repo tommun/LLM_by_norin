@@ -64,11 +64,14 @@ class ImageGenEngine:
             if not success:
                 raise RuntimeError(f"Failed to load image model: {self.last_error}")
 
+        # Ensure width and height are divisible by 8 and clamped safely
+        safe_width = max(256, min(768, (int(width) // 8) * 8))
+        safe_height = max(256, min(768, (int(height) // 8) * 8))
+
         generator = None
         if seed is not None and seed >= 0:
             generator = torch.Generator(device=self.device).manual_seed(seed)
         else:
-            # Random seed
             seed = int(torch.randint(0, 2**32 - 1, (1,)).item())
             generator = torch.Generator(device=self.device).manual_seed(seed)
 
@@ -79,8 +82,8 @@ class ImageGenEngine:
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator,
-                width=width,
-                height=height
+                width=safe_width,
+                height=safe_height
             )
 
         elapsed_sec = round(time.time() - start_time, 2)
@@ -97,6 +100,8 @@ class ImageGenEngine:
             "prompt": prompt,
             "seed": seed,
             "steps": num_inference_steps,
+            "width": safe_width,
+            "height": safe_height,
             "elapsed_seconds": elapsed_sec,
             "model_id": self.model_id
         }
