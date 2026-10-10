@@ -473,6 +473,77 @@ export default function App() {
     setActiveSessionId(newSessionId);
   };
 
+  // 🪄 対話型プロンプト改善: 生成された画像を対話型AIに引き継いで要素追加
+  const handleRefineWithChat = (msg: Message) => {
+    const originalPrompt = msg.imageMeta?.final_prompt || msg.imageMeta?.enhanced_prompt || msg.content.replace(/^\[.*?\]\s*/, '').replace(/^プロンプト:\s*/, '');
+    const imageUrl = msg.imageUrl;
+
+    const craftsmanBot = bots.find(b => b.id === 'prompt_craftsman') || {
+      id: 'prompt_craftsman',
+      name: '🎨 Midjourney プロンプト職人',
+      description: '画像プロンプト作成・要素追加専門AI',
+      category: '画像生成',
+      avatar: '🪄',
+      avatar_image: '',
+      system_prompt: 'あなたはMidjourney v6およびSDXLのプロンプトエンジニアです。ユーザーの要望や追加したい要素を反映し、高品質な英語プロンプトを提案・更新してください。更新したプロンプトは必ず ```prompt または ``` コードブロックで提示してください。',
+      greeting: 'プロンプト職人AIです！この画像のプロンプトにどんな要素を追加・変更しましょうか？',
+      quick_prompts: []
+    };
+
+    const newSessionId = `session-${Date.now()}`;
+    const greetingText = `🎨 **この画像のプロンプトを対話で改善します！**\n\n**【現在のプロンプト】**\n\`\`\`prompt\n${originalPrompt}\n\`\`\`\n\nどのような要素を追加・修正したいですか？\n（例:「麦わら帽子を被せて」「夕暮れの光を強くして」「雨の街並みに変更して」など、日本語で自由にお伝えください！）`;
+
+    const initialMessages: Message[] = [
+      {
+        id: `greeting-${Date.now()}`,
+        role: 'assistant',
+        content: greetingText,
+        images: imageUrl ? [imageUrl] : undefined
+      }
+    ];
+
+    const newSession: ChatSession = {
+      id: newSessionId,
+      title: `プロンプト改善: ${originalPrompt.slice(0, 10)}...`,
+      createdAt: Date.now(),
+      messages: initialMessages,
+      mode: 'chat',
+      aspectRatio: activeSession.aspectRatio,
+      style: activeSession.style,
+      loraName: activeSession.loraName,
+      botId: craftsmanBot.id
+    };
+
+    setSystemPrompt(craftsmanBot.system_prompt);
+    setSessions(prev => [newSession, ...prev]);
+    setActiveSessionId(newSessionId);
+    setInput('');
+    setTimeout(() => textareaRef.current?.focus(), 100);
+  };
+
+  // チャットから画像生成タブへプロンプトを転送して即座に生成画面へ切り替え
+  const handleSendPromptToGenerator = (promptText: string) => {
+    const targetMode = activeSession.loraName ? 'style_master' : 'prompt_master';
+    const newSessionId = `session-${Date.now()}`;
+    const modeTitle = targetMode === 'style_master' ? '画風継承' : 'プロンプト追求';
+
+    const newSession: ChatSession = {
+      id: newSessionId,
+      title: `${modeTitle}: ${promptText.slice(0, 12)}...`,
+      createdAt: Date.now(),
+      messages: [],
+      mode: targetMode,
+      aspectRatio: activeSession.aspectRatio,
+      style: activeSession.style,
+      loraName: activeSession.loraName
+    };
+
+    setSessions(prev => [newSession, ...prev]);
+    setActiveSessionId(newSessionId);
+    setInput(promptText);
+    setTimeout(() => textareaRef.current?.focus(), 100);
+  };
+
   const handleTrainImagesSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
@@ -2033,6 +2104,13 @@ export default function App() {
                           </span>
                           <div style={{ display: 'flex', gap: 6 }}>
                             <button
+                              className="image-action-tool-btn refine"
+                              onClick={() => handleRefineWithChat(msg)}
+                              title="対話型AIに画像を渡して要素を追加・プロンプト修正"
+                            >
+                              <Wand2 size={13} color="#f59e0b" /> 対話で要素追加
+                            </button>
+                            <button
                               className="image-download-btn"
                               onClick={() => setSelectedImage(msg.imageUrl || null)}
                               title="拡大表示"
@@ -2050,9 +2128,18 @@ export default function App() {
                         </div>
                         {msg.imageMeta?.enhanced_prompt && (
                           <div className="enhanced-prompt-accordion">
-                            <div className="ep-label">
-                              <Sparkles size={12} color="#f59e0b" />
-                              <span>Midjourney風 拡張プロンプト:</span>
+                            <div className="ep-label-bar">
+                              <div className="ep-label">
+                                <Sparkles size={12} color="#f59e0b" />
+                                <span>Midjourney風 拡張プロンプト:</span>
+                              </div>
+                              <button
+                                className="ep-refine-btn"
+                                onClick={() => handleRefineWithChat(msg)}
+                                title="このプロンプトを対話型AIでブラッシュアップ"
+                              >
+                                💬 対話で編集
+                              </button>
                             </div>
                             <div className="ep-content">{msg.imageMeta.enhanced_prompt}</div>
                           </div>
@@ -2102,6 +2189,23 @@ export default function App() {
                       >
                         {copiedId === msg.id ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
                       </button>
+                      {/* もしアシスタントの返答内にプロンプトがあればワンクリックで画像生成へ転送 */}
+                      {(() => {
+                        const codeMatch = msg.content.match(/```(?:prompt)?\s*([\s\S]*?)```/);
+                        const extractedPrompt = codeMatch ? codeMatch[1].trim() : null;
+                        if (!extractedPrompt && !msg.content.toLowerCase().includes('prompt:')) return null;
+                        const targetPrompt = extractedPrompt || msg.content;
+                        return (
+                          <button
+                            className="action-btn prompt-to-image-btn"
+                            onClick={() => handleSendPromptToGenerator(targetPrompt)}
+                            title="このプロンプトで画像生成画面へ移動して生成"
+                          >
+                            <Sparkles size={14} color="#f59e0b" />
+                            <span>🎨 このプロンプトで画像生成</span>
+                          </button>
+                        );
+                      })()}
                       <button className="action-btn" title="詳細オプション">
                         <MoreHorizontal size={14} />
                       </button>
