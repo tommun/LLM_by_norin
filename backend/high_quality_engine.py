@@ -78,11 +78,14 @@ class HighQualityImageEngine:
                     algorithm_type="dpmsolver++"
                 )
 
-                # VRAM optimizations for 12GB: Enable VAE tiling & CPU Offload / Direct CUDA
+                # Put SDXL directly on CUDA GPU for lightning-fast inference
                 if torch.cuda.is_available():
-                    self.pipe.enable_vae_tiling()
-                    # model_cpu_offload gives maximum stability when coexisting with 7B LLM
-                    self.pipe.enable_model_cpu_offload()
+                    self.pipe = self.pipe.to("cuda")
+                    if hasattr(self.pipe, "vae") and self.pipe.vae is not None:
+                        if hasattr(self.pipe.vae, "enable_tiling"):
+                            self.pipe.vae.enable_tiling()
+                        if hasattr(self.pipe.vae, "enable_slicing"):
+                            self.pipe.vae.enable_slicing()
 
                 self.is_ready = True
                 self.is_loading = False
@@ -180,6 +183,19 @@ class HighQualityImageEngine:
         seed: Optional[int] = None,
         model_engine=None
     ) -> Dict[str, Any]:
+        # Enhance prompt if requested using LLM
+        final_prompt = prompt
+        enhanced_prompt_text = None
+        if enhance_prompt:
+            enhanced = self.enhance_prompt_with_llm(prompt, model_engine)
+            if enhanced and enhanced != prompt:
+                final_prompt = enhanced
+                enhanced_prompt_text = enhanced
+
+        # Dynamic VRAM handover: Offload LLM to CPU RAM so SDXL gets 100% full GPU VRAM (fast inference)
+        if model_engine is not None and hasattr(model_engine, "offload_to_cpu"):
+            model_engine.offload_to_cpu()
+
         if not self.is_ready:
             success = self.load_model()
             if not success:
@@ -188,15 +204,6 @@ class HighQualityImageEngine:
         # Clean CUDA cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-        # Enhance prompt if requested
-        final_prompt = prompt
-        enhanced_prompt_text = None
-        if enhance_prompt:
-            enhanced = self.enhance_prompt_with_llm(prompt, model_engine)
-            if enhanced and enhanced != prompt:
-                final_prompt = enhanced
-                enhanced_prompt_text = enhanced
 
         # Configure LoRA style transfer
         self.apply_lora(lora_name, lora_scale)
@@ -222,47 +229,48 @@ class HighQualityImageEngine:
         print(f"[HQEngine] Generating ({width}x{height}, {steps} steps, cfg={guidance}) for: '{final_prompt[:80]}...'")
         start_time = time.time()
 
-        with torch.inference_mode():
-            result = self.pipe(
-                prompt=final_prompt,
-                negative_prompt=neg_prompt,
-                num_inference_steps=steps,
-                guidance_scale=guidance,
-                generator=generator,
-                width=width,
-                height=height
-            )
+        try:
+            with torch.inference_mode():
+                result = self.pipe(
+                    prompt=final_prompt,
+                    negative_prompt=neg_prompt,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    generator=generator,
+                    width=width,
+                    height=height
+                )
 
-        elapsed_sec = round(time.time() - start_time, 2)
-        image = result.images[0]
+            elapsed_sec = round(time.time() - start_time, 2)
+            image = result.images[0]
 
-        # Convert to Base64
-        buffered = io.BytesIO()
-        image.save(buffered, format="PNG")
-        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-        data_url = f"data:image/png;base64,{img_str}"
+            # Convert to Base64
+            buffered = io.BytesIO()
+            image.save(buffered, format="PNG")
+            img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            data_url = f"data:image/png;base64,{img_str}"
 
-        # Clean cache
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        return {
-            "image_url": data_url,
-            "original_prompt": prompt,
-            "final_prompt": final_prompt,
-            "enhanced_prompt": enhanced_prompt_text,
-            "negative_prompt": neg_prompt,
-            "lora_name": lora_name,
-            "lora_scale": lora_scale,
-            "seed": seed,
-            "steps": steps,
-            "guidance_scale": guidance,
-            "width": width,
-            "height": height,
-            "aspect_ratio": aspect_ratio,
-            "elapsed_seconds": elapsed_sec,
-            "model_id": self.model_id
-        }
+            return {
+                "image_url": data_url,
+                "original_prompt": prompt,
+                "final_prompt": final_prompt,
+                "enhanced_prompt": enhanced_prompt_text,
+                "negative_prompt": neg_prompt,
+                "lora_name": lora_name,
+                "lora_scale": lora_scale,
+                "seed": seed,
+                "steps": steps,
+                "guidance_scale": guidance,
+                "width": width,
+                "height": height,
+                "aspect_ratio": aspect_ratio,
+                "elapsed_seconds": elapsed_sec
+            }
+        finally:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if model_engine is not None and hasattr(model_engine, "reload_to_gpu"):
+                model_engine.reload_to_gpu()
 
 # Global singleton
 hq_image_engine = HighQualityImageEngine()

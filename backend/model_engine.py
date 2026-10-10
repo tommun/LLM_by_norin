@@ -112,6 +112,30 @@ class LLMEngine:
                 print(f"[LLMEngine] Error loading vision model: {e}", file=sys.stderr)
                 return False
 
+    def offload_to_cpu(self):
+        """Free GPU VRAM for image generation while retaining weights in RAM"""
+        with self.load_lock:
+            if self.model is not None and torch.cuda.is_available():
+                try:
+                    self.model.to("cpu")
+                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
+                    print("[LLMEngine] Offloaded Vision LLM to CPU RAM.")
+                except Exception as e:
+                    print(f"[LLMEngine] Offload warning: {e}")
+
+    def reload_to_gpu(self):
+        """Restore LLM to GPU when chat is invoked"""
+        with self.load_lock:
+            if self.model is not None and torch.cuda.is_available():
+                try:
+                    self.model.to("cuda")
+                    torch.cuda.empty_cache()
+                    print("[LLMEngine] Restored Vision LLM to CUDA GPU.")
+                except Exception as e:
+                    print(f"[LLMEngine] Reload warning: {e}")
+
     def stream_generate(
         self,
         messages: list,
