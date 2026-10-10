@@ -1974,3 +1974,252 @@ body {
   gap: 6px;
   cursor: pointer;
 }
+
+/* ==========================================================================
+   Prompt Master & Style Master Studio Styles
+   ========================================================================== */
+.mode-tab.active-prompt-master {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: #f59e0b;
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.mode-tab.active-style-master {
+  background: rgba(236, 72, 153, 0.15);
+  border-color: #ec4899;
+  color: #f472b6;
+  font-weight: 600;
+}
+
+.sidebar-section-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #f8fafc;
+  margin: 12px 0 8px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.enhance-preview-btn {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid #f59e0b;
+  color: #fbbf24;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.enhance-preview-btn:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.3);
+  color: #ffffff;
+}
+
+.enhance-preview-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.enhanced-prompt-preview-bar {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.preview-text {
+  font-size: 0.82rem;
+  color: #e2e8f0;
+  line-height: 1.45;
+  max-height: 80px;
+  overflow-y: auto;
+  font-family: inherit;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.preview-action-btn {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preview-action-btn.apply {
+  background: #f59e0b;
+  border: none;
+  color: #111827;
+  font-weight: 600;
+}
+
+.preview-action-btn.apply:hover {
+  background: #d97706;
+}
+
+.preview-action-btn.cancel {
+  background: transparent;
+  border: 1px solid #475569;
+  color: #94a3b8;
+}
+
+.enhanced-prompt-accordion {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(15, 23, 42, 0.5);
+  border-radius: 6px;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  font-size: 0.78rem;
+}
+
+.ep-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  color: #fbbf24;
+  margin-bottom: 4px;
+}
+
+.ep-content {
+  color: #cbd5e1;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* Empty HQ Welcome View */
+.empty-hq-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 650px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.empty-hq-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px;
+  border-radius: 20px;
+  border: 1px solid;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.empty-suggest-prompts {
+  width: 100%;
+  margin-top: 16px;
+}
+
+.suggest-prompts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.empty-style-no-lora {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px dashed rgba(236, 72, 153, 0.4);
+  border-radius: 10px;
+  padding: 20px;
+  margin-top: 16px;
+  width: 100%;
+}
+
+.start-train-shortcut-btn {
+  background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%);
+  color: white;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: transform 0.15s;
+}
+
+.start-train-shortcut-btn:hover {
+  transform: translateY(-1px);
+}
+
+.suggest-style-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.style-chip-btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: #e2e8f0;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s;
+}
+
+.style-chip-btn:hover {
+  background: rgba(236, 72, 153, 0.15);
+  border-color: #ec4899;
+  color: #f472b6;
+}
+
+.style-chip-btn.selected {
+  background: rgba(236, 72, 153, 0.25);
+  border-color: #ec4899;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+/* Input Focus & Send Button Styles */
+.chat-input-box.prompt-master-focus {
+  border-color: #f59e0b;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.15);
+}
+
+.chat-input-box.style-master-focus {
+  border-color: #ec4899;
+  box-shadow: 0 0 12px rgba(236, 72, 153, 0.15);
+}
+
+.send-button.prompt-master-send {
+  background: linear-gradient(135deg, #d97706 0%, #f59e0b 100%);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
+.send-button.prompt-master-send:hover {
+  box-shadow: 0 6px 16px rgba(245, 158, 11, 0.5);
+}
+
+.send-button.style-master-send {
+  background: linear-gradient(135deg, #db2777 0%, #ec4899 100%);
+  box-shadow: 0 4px 12px rgba(236, 72, 153, 0.3);
+}
+
+.send-button.style-master-send:hover {
+  box-shadow: 0 6px 16px rgba(236, 72, 153, 0.5);
+}
+

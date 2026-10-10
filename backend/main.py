@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from model_engine import engine, DEFAULT_MODEL_ID
 from image_engine import image_engine, STYLE_PRESETS
+from high_quality_engine import hq_image_engine, HQ_ASPECT_RATIOS
 
 # Lifespan event to automatically load Vision LLM model at startup
 @asynccontextmanager
@@ -63,6 +64,20 @@ class GitSyncRequest(BaseModel):
     image_data_urls: Optional[List[str]] = Field(default=None)
     commit_message: Optional[str] = Field(default="chore: sync generated images and chat outputs")
 
+class HQGenerateRequest(BaseModel):
+    prompt: str = Field(..., description="Prompt text")
+    negative_prompt: Optional[str] = Field(default=None, description="Negative prompt")
+    enhance_prompt: bool = Field(default=True, description="Enhance prompt with Vision LLM into Midjourney style")
+    lora_name: Optional[str] = Field(default=None, description="Custom style LoRA filename")
+    lora_scale: float = Field(default=0.8, ge=0.0, le=1.5, description="LoRA style intensity")
+    steps: int = Field(default=30, ge=15, le=50, description="DPM++ inference steps")
+    guidance_scale: float = Field(default=7.5, ge=1.0, le=20.0, description="CFG scale")
+    aspect_ratio: str = Field(default="1:1", description="1:1, 16:9, 9:16, 4:3, 3:4")
+    seed: Optional[int] = Field(default=None, description="Random seed")
+
+class EnhancePromptRequest(BaseModel):
+    prompt: str = Field(..., description="Prompt to enhance into Midjourney-style English prompt")
+
 @app.get("/")
 def read_root():
     gpu_info = engine.get_gpu_info()
@@ -72,6 +87,7 @@ def read_root():
         "cuda_available": gpu_info["cuda_available"],
         "vision_llm_loaded": engine.is_ready,
         "image_gen_loaded": image_engine.is_ready,
+        "hq_image_loaded": hq_image_engine.is_ready,
     }
 
 @app.get("/api/gpu")
@@ -81,6 +97,9 @@ def get_status():
     status["image_model_id"] = image_engine.model_id
     status["image_model_loaded"] = image_engine.is_ready
     status["image_is_loading"] = image_engine.is_loading
+    status["hq_model_id"] = hq_image_engine.model_id
+    status["hq_model_loaded"] = hq_image_engine.is_ready
+    status["hq_is_loading"] = hq_image_engine.is_loading
     return status
 
 @app.post("/api/model/load")
@@ -183,6 +202,40 @@ async def generate_image_endpoint(req: ImageGenerateRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
+
+@app.get("/api/hq/ratios")
+def get_hq_ratios():
+    return HQ_ASPECT_RATIOS
+
+@app.post("/api/hq/enhance-prompt")
+async def enhance_prompt_endpoint(req: EnhancePromptRequest):
+    try:
+        enhanced = hq_image_engine.enhance_prompt_with_llm(req.prompt, engine)
+        return {
+            "original_prompt": req.prompt,
+            "enhanced_prompt": enhanced
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prompt enhancement failed: {str(e)}")
+
+@app.post("/api/hq/generate")
+async def generate_hq_image_endpoint(req: HQGenerateRequest):
+    try:
+        result = hq_image_engine.generate(
+            prompt=req.prompt,
+            negative_prompt=req.negative_prompt,
+            enhance_prompt=req.enhance_prompt,
+            lora_name=req.lora_name,
+            lora_scale=req.lora_scale,
+            num_inference_steps=req.steps,
+            guidance_scale=req.guidance_scale,
+            aspect_ratio=req.aspect_ratio,
+            seed=req.seed,
+            model_engine=engine
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"High-quality generation failed: {str(e)}")
 
 @app.post("/api/git/sync-outputs")
 async def sync_outputs_to_git(req: GitSyncRequest):

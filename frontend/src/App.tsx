@@ -42,7 +42,7 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   images?: string[]; // Attached images for vision
-  isImage?: boolean; // True if this was an SD-Turbo generated image
+  isImage?: boolean; // True if this was an AI-generated image
   imageUrl?: string;
   imageMeta?: {
     seed: number;
@@ -52,6 +52,11 @@ interface Message {
     height?: number;
     style?: string;
     style_name?: string;
+    enhanced_prompt?: string;
+    final_prompt?: string;
+    lora_name?: string;
+    lora_scale?: number;
+    guidance_scale?: number;
   };
   feedback?: 'like' | 'dislike' | null;
 }
@@ -64,6 +69,14 @@ const ASPECT_RATIO_CONFIG: Record<AspectRatio, { label: string; width: number; h
   '9:16': { label: '9:16', width: 360, height: 640, desc: 'スマホ縦長 (360×640)' },
   '4:3': { label: '4:3', width: 576, height: 432, desc: '写真横長 (576×432)' },
   '3:4': { label: '3:4', width: 432, height: 576, desc: 'ポスター縦長 (432×576)' },
+};
+
+const HQ_ASPECT_RATIO_CONFIG: Record<AspectRatio, { label: string; width: number; height: number; desc: string }> = {
+  '1:1': { label: '1:1', width: 1024, height: 1024, desc: '高精細正方形 (1024×1024)' },
+  '16:9': { label: '16:9', width: 1216, height: 832, desc: 'シネマ横長 (1216×832)' },
+  '9:16': { label: '9:16', width: 832, height: 1216, desc: 'スマホ縦長 (832×1216)' },
+  '4:3': { label: '4:3', width: 1152, height: 896, desc: '写真横長 (1152×896)' },
+  '3:4': { label: '3:4', width: 896, height: 1152, desc: 'ポスター縦長 (896×1152)' },
 };
 
 const STYLE_PRESETS = [
@@ -95,7 +108,7 @@ interface ChatSession {
   title: string;
   createdAt: number;
   messages: Message[];
-  mode: 'chat' | 'image' | 'train' | 'bots';
+  mode: 'chat' | 'image' | 'train' | 'bots' | 'prompt_master' | 'style_master';
   aspectRatio: AspectRatio;
   style: string;
   loraName?: string;
@@ -119,6 +132,9 @@ interface GpuStatus {
   image_model_id?: string;
   image_model_loaded?: boolean;
   image_is_loading?: boolean;
+  hq_model_id?: string;
+  hq_model_loaded?: boolean;
+  hq_is_loading?: boolean;
 }
 
 const BACKEND_URL = 'http://localhost:8000';
@@ -209,6 +225,15 @@ export default function App() {
   const [quickPromptInput, setQuickPromptInput] = useState('');
   const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
   const [botCategoryFilter, setBotCategoryFilter] = useState<string>('all');
+
+  // High-Quality Generation States (Prompt Master & Style Master)
+  const [hqSteps, setHqSteps] = useState(30);
+  const [hqGuidanceScale, setHqGuidanceScale] = useState(7.5);
+  const [hqEnhancePrompt, setHqEnhancePrompt] = useState(true);
+  const [hqLoraScale, setHqLoraScale] = useState(0.8);
+  const [hqNegativePrompt, setHqNegativePrompt] = useState('');
+  const [enhancedPromptPreview, setEnhancedPromptPreview] = useState<string | null>(null);
+  const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
 
   // Derived Bot values
   const currentBot = bots.find(b => b.id === activeSession.botId);
@@ -752,6 +777,114 @@ export default function App() {
     }
   };
 
+  // High-Quality SDXL Generation Handler (Prompt Master & Style Master)
+  const handleHQGenerate = async (promptText: string) => {
+    setIsGenerating(true);
+    const isStyleMode = activeSession.mode === 'style_master';
+    const modeLabel = isStyleMode ? '画風継承' : 'プロンプト追求';
+    
+    const userMsg: Message = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: `[${modeLabel}] ${promptText}`
+    };
+    const placeholderMsg: Message = {
+      id: `ai-${Date.now()}`,
+      role: 'assistant',
+      content: `✨ ${modeLabel} AIが推論中... (SDXL 1024×1024 / ${hqSteps} Steps, 丁寧なディテール構築中)`,
+      isImage: true
+    };
+
+    updateActiveSession(s => {
+      const isDefault = s.title.startsWith('会話 ') || s.title.startsWith('新規');
+      return {
+        ...s,
+        title: isDefault ? (promptText.slice(0, 14) + (promptText.length > 14 ? '...' : '')) : s.title,
+        messages: [...s.messages, userMsg, placeholderMsg]
+      };
+    });
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/hq/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: promptText,
+          negative_prompt: hqNegativePrompt || null,
+          enhance_prompt: hqEnhancePrompt,
+          lora_name: isStyleMode ? (activeSession.loraName || null) : null,
+          lora_scale: hqLoraScale,
+          steps: hqSteps,
+          guidance_scale: hqGuidanceScale,
+          aspect_ratio: activeSession.aspectRatio,
+          seed: null
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error: ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      updateActiveSession(s => {
+        const updated = [...s.messages];
+        updated[updated.length - 1] = {
+          ...updated[updated.length - 1],
+          content: data.enhanced_prompt ? `✨ 拡張プロンプト: ${data.enhanced_prompt}` : `プロンプト: ${data.original_prompt}`,
+          isImage: true,
+          imageUrl: data.image_url,
+          imageMeta: {
+            seed: data.seed,
+            steps: data.steps,
+            elapsed_seconds: data.elapsed_seconds,
+            width: data.width,
+            height: data.height,
+            enhanced_prompt: data.enhanced_prompt,
+            final_prompt: data.final_prompt,
+            lora_name: data.lora_name,
+            lora_scale: data.lora_scale,
+            guidance_scale: data.guidance_scale
+          }
+        };
+        return { ...s, messages: updated };
+      });
+    } catch (err: any) {
+      updateActiveSession(s => {
+        const updated = [...s.messages];
+        updated[updated.length - 1] = {
+          ...updated[updated.length - 1],
+          content: `⚠️ 生成エラー: ${err.message || '生成に失敗しました'}`
+        };
+        return { ...s, messages: updated };
+      });
+    } finally {
+      setIsGenerating(false);
+      fetchGpuStatus();
+    }
+  };
+
+  const handlePreviewEnhancedPrompt = async () => {
+    if (!input.trim()) return;
+    setIsEnhancingPrompt(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/hq/enhance-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: input.trim() })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEnhancedPromptPreview(data.enhanced_prompt);
+      }
+    } catch (e: any) {
+      alert(`プロンプト拡張エラー: ${e.message}`);
+    } finally {
+      setIsEnhancingPrompt(false);
+    }
+  };
+
   // Chat Streaming Handler (Vision & Text)
   const handleChatStream = async (userText: string, attachedImages: string[]) => {
     const userMsg: Message = {
@@ -869,7 +1002,10 @@ export default function App() {
     const trimmed = msgs.slice(0, actualUserIdx);
     updateActiveSession(s => ({ ...s, messages: trimmed }));
 
-    if (lastUserMsg.isImage || lastUserMsg.content.startsWith('[画像生成]')) {
+    if (lastUserMsg.content.startsWith('[プロンプト追求]') || lastUserMsg.content.startsWith('[画風継承]')) {
+      const cleanPrompt = lastUserMsg.content.replace(/\[(プロンプト追求|画風継承)\]/, '').trim();
+      handleHQGenerate(cleanPrompt);
+    } else if (lastUserMsg.isImage || lastUserMsg.content.startsWith('[画像生成]')) {
       const cleanPrompt = lastUserMsg.content.replace('[画像生成]', '').trim();
       handleImageGenerate(cleanPrompt);
     } else {
@@ -885,7 +1021,9 @@ export default function App() {
     setInput('');
     setAttachments([]);
 
-    if (activeSession.mode === 'image' || text.startsWith('/image ')) {
+    if (activeSession.mode === 'prompt_master' || activeSession.mode === 'style_master') {
+      handleHQGenerate(text);
+    } else if (activeSession.mode === 'image' || text.startsWith('/image ')) {
       const cleanPrompt = text.startsWith('/image ') ? text.replace('/image ', '').trim() : text;
       handleImageGenerate(cleanPrompt);
     } else {
@@ -1045,7 +1183,141 @@ export default function App() {
           </>
         )}
 
-        {/* Image Generation Settings */}
+        {/* High-Quality Settings (Prompt Master & Style Master) */}
+        {(activeSession.mode === 'prompt_master' || activeSession.mode === 'style_master') && (
+          <>
+            <div className="sidebar-section-title">
+              {activeSession.mode === 'prompt_master' ? '🎨 プロンプト追求設定' : '🖌️ 画風継承設定'}
+            </div>
+
+            {activeSession.mode === 'style_master' && (
+              <>
+                <div className="param-group">
+                  <div className="param-label">
+                    <span>適用する画風 (LoRA)</span>
+                  </div>
+                  <select
+                    className="style-select"
+                    value={activeSession.loraName || ''}
+                    onChange={(e) => updateActiveSession(s => ({ ...s, loraName: e.target.value || undefined }))}
+                  >
+                    <option value="">(画風を選択してください)</option>
+                    {availableLoras.map((l) => (
+                      <option key={l} value={l}>
+                        {l}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="param-group">
+                  <div className="param-label">
+                    <span>画風の適用強度</span>
+                    <span>{hqLoraScale}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.2"
+                    max="1.3"
+                    step="0.05"
+                    value={hqLoraScale}
+                    onChange={(e) => setHqLoraScale(parseFloat(e.target.value))}
+                    className="param-slider"
+                  />
+                  <span style={{ fontSize: '0.73rem', color: '#9ca3af' }}>
+                    0.8前後が最も自然に画風が反映されます。
+                  </span>
+                </div>
+              </>
+            )}
+
+            <div className="param-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer', color: '#f59e0b' }}>
+                <input
+                  type="checkbox"
+                  checked={hqEnhancePrompt}
+                  onChange={(e) => setHqEnhancePrompt(e.target.checked)}
+                />
+                <span>🪄 Midjourney風 プロンプト自動拡張</span>
+              </label>
+              <span style={{ fontSize: '0.72rem', color: '#94a3b8', display: 'block', marginTop: 2 }}>
+                Qwen2.5-VL が情景・ライティング・構図を最高峰英語プロンプトに昇華します。
+              </span>
+            </div>
+
+            <div className="param-group">
+              <div className="param-label">
+                <span>縦横比 (高解像度 1024px基準)</span>
+              </div>
+              <div className="aspect-ratio-selector">
+                {(Object.keys(HQ_ASPECT_RATIO_CONFIG) as AspectRatio[]).map((ratio) => (
+                  <button
+                    key={ratio}
+                    type="button"
+                    className={`aspect-ratio-btn ${activeSession.aspectRatio === ratio ? 'active' : ''}`}
+                    onClick={() => updateActiveSession(s => ({ ...s, aspectRatio: ratio }))}
+                  >
+                    {ratio}
+                  </button>
+                ))}
+              </div>
+              <div className="aspect-ratio-info">
+                <span>{HQ_ASPECT_RATIO_CONFIG[activeSession.aspectRatio].desc}</span>
+              </div>
+            </div>
+
+            <div className="param-group">
+              <div className="param-label">
+                <span>推論ステップ数 (DPM++ 2M)</span>
+                <span>{hqSteps} Steps</span>
+              </div>
+              <input
+                type="range"
+                min="20"
+                max="45"
+                step="5"
+                value={hqSteps}
+                onChange={(e) => setHqSteps(parseInt(e.target.value))}
+                className="param-slider"
+              />
+              <span style={{ fontSize: '0.73rem', color: '#9ca3af' }}>
+                30ステップで緻密な質感とプロンプト再現性を追求します。
+              </span>
+            </div>
+
+            <div className="param-group">
+              <div className="param-label">
+                <span>プロンプト忠実度 (CFG Scale)</span>
+                <span>{hqGuidanceScale}</span>
+              </div>
+              <input
+                type="range"
+                min="5.0"
+                max="12.0"
+                step="0.5"
+                value={hqGuidanceScale}
+                onChange={(e) => setHqGuidanceScale(parseFloat(e.target.value))}
+                className="param-slider"
+              />
+            </div>
+
+            <div className="param-group">
+              <div className="param-label">
+                <span>除外したい要素 (Negative Prompt)</span>
+              </div>
+              <input
+                type="text"
+                className="bot-form-input"
+                style={{ fontSize: '0.75rem', padding: '6px 8px' }}
+                placeholder="例: text, watermark, blurry..."
+                value={hqNegativePrompt}
+                onChange={(e) => setHqNegativePrompt(e.target.value)}
+              />
+            </div>
+          </>
+        )}
+
+        {/* Turbo Image Generation Settings */}
         {activeSession.mode === 'image' && (
           <>
             <div className="param-group">
@@ -1194,7 +1466,7 @@ export default function App() {
                   onDoubleClick={(e) => startRenameTab(s, e)}
                   title="ダブルクリックでタイトルを変更"
                 >
-                  {s.mode === 'bots' ? '🤖 ' : s.mode === 'train' ? '🎓 ' : s.mode === 'image' ? '🎨 ' : (s.botId && bots.find(b => b.id === s.botId)?.avatar) ? `${bots.find(b => b.id === s.botId)?.avatar} ` : '💬 '}
+                  {s.mode === 'prompt_master' ? '🎨 ' : s.mode === 'style_master' ? '🖌️ ' : s.mode === 'bots' ? '🤖 ' : s.mode === 'train' ? '🎓 ' : s.mode === 'image' ? '⚡ ' : (s.botId && bots.find(b => b.id === s.botId)?.avatar) ? `${bots.find(b => b.id === s.botId)?.avatar} ` : '💬 '}
                   {s.title}
                 </span>
               )}
@@ -1616,10 +1888,88 @@ export default function App() {
                     </div>
                   )}
                 </>
+              ) : activeSession.mode === 'prompt_master' ? (
+                <div className="empty-hq-welcome">
+                  <div className="empty-hq-badge" style={{ background: 'rgba(245, 158, 11, 0.15)', borderColor: '#f59e0b', color: '#fbbf24' }}>
+                    <Sparkles size={16} /> Midjourney級 プロンプト追求スタジオ
+                  </div>
+                  <h3>プロンプト忠実・超高精細 AI (SDXL 1024×1024)</h3>
+                  <p>
+                    速度ではなく「構図の忠実度・圧倒的な質感・ライティング」を最優先して、25〜35ステップかけて緻密に描き出します。
+                  </p>
+                  <p style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
+                    日本語でイメージを入力すると、Vision LLM が Midjourney 風の最高峰英語プロンプトへと自動拡張します（左下でON/OFF可能）。
+                  </p>
+
+                  <div className="empty-suggest-prompts">
+                    <span className="suggest-title">💡 おすすめの高品質プロンプト例（クリックで入力）:</span>
+                    <div className="suggest-prompts-grid">
+                      {[
+                        '雨上がりの夜、ネオンに照らされた路地裏を歩く猫、水たまりの反射',
+                        'サイバーパンクの未来都市、空飛ぶ車と高層ビル、雨に濡れたサイバー少女',
+                        '水彩画の透明感あふれる星空と古城の湖畔、幻想的な光の粒子',
+                        '木漏れ日が差し込む静かなアンティーク図書館で読書する少女、詳細な絵画'
+                      ].map((pr, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          className="empty-prompt-card"
+                          onClick={() => handleSelectQuickPrompt(pr)}
+                        >
+                          <span>✨ {pr}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : activeSession.mode === 'style_master' ? (
+                <div className="empty-hq-welcome">
+                  <div className="empty-hq-badge" style={{ background: 'rgba(236, 72, 153, 0.15)', borderColor: '#ec4899', color: '#f472b6' }}>
+                    <Palette size={16} /> 画風継承 AI スタジオ
+                  </div>
+                  <h3>学んだ画風で、あなたが望む新しい絵を描く</h3>
+                  <p>
+                    フォルダから学習したイラストの「筆致・タッチ・色彩」を完全に引き継ぎ、あなたが望む新しいテーマを1024×1024で描きます。
+                  </p>
+
+                  {availableLoras.length === 0 ? (
+                    <div className="empty-style-no-lora">
+                      <p style={{ color: '#cbd5e1', fontSize: '0.9rem', marginBottom: 12 }}>
+                        まだ学習済みの画風（LoRA）がありません。まずは「画風学習 (LoRA)」タブでイラストフォルダから画風を学習しましょう！
+                      </p>
+                      <button
+                        className="start-train-shortcut-btn"
+                        onClick={() => updateActiveSession(s => ({ ...s, mode: 'train' }))}
+                      >
+                        <GraduationCap size={16} /> 🎓 画風学習スタジオへ移動する
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="empty-suggest-prompts">
+                      <span className="suggest-title">🎨 現在利用可能な画風ライブラリ（クリックで選択）:</span>
+                      <div className="suggest-style-chips">
+                        {availableLoras.map((lora) => (
+                          <button
+                            key={lora}
+                            type="button"
+                            className={`style-chip-btn ${activeSession.loraName === lora ? 'selected' : ''}`}
+                            onClick={() => updateActiveSession(s => ({ ...s, loraName: lora }))}
+                          >
+                            <Palette size={13} />
+                            <span>{lora}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: 12 }}>
+                        画風を選択後、下の入力欄に「描いてほしいもの（例: 夕暮れの草原、宇宙服の少年）」を入力して送信してください。
+                      </p>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <>
                   <ImageIcon className="empty-icon" style={{ color: '#8b5cf6' }} />
-                  <h3>高速ローカル画像生成スタジオ</h3>
+                  <h3>高速ローカル画像生成スタジオ (SD-Turbo)</h3>
                   <p>
                     SD-Turbo を使用し、RTX 4070 Ti の圧倒的なパワーでわずか1秒未満で画像を生成します。
                   </p>
@@ -1677,7 +2027,9 @@ export default function App() {
                         />
                         <div className="image-meta-bar">
                           <span>
-                            ⏱️ {msg.imageMeta?.elapsed_seconds}s | {msg.imageMeta?.width}×{msg.imageMeta?.height} | {msg.imageMeta?.style_name || '標準'}
+                            ⏱️ {msg.imageMeta?.elapsed_seconds}s | {msg.imageMeta?.width}×{msg.imageMeta?.height} | {msg.imageMeta?.steps} steps
+                            {msg.imageMeta?.lora_name ? ` | 🎨 画風: ${msg.imageMeta.lora_name}` : ''}
+                            {msg.imageMeta?.style_name ? ` | ${msg.imageMeta.style_name}` : ''}
                           </span>
                           <div style={{ display: 'flex', gap: 6 }}>
                             <button
@@ -1696,6 +2048,15 @@ export default function App() {
                             </button>
                           </div>
                         </div>
+                        {msg.imageMeta?.enhanced_prompt && (
+                          <div className="enhanced-prompt-accordion">
+                            <div className="ep-label">
+                              <Sparkles size={12} color="#f59e0b" />
+                              <span>Midjourney風 拡張プロンプト:</span>
+                            </div>
+                            <div className="ep-content">{msg.imageMeta.enhanced_prompt}</div>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <>
@@ -1772,11 +2133,20 @@ export default function App() {
                 <span>対話 & 画像認識</span>
               </button>
               <button
-                className={`mode-tab ${activeSession.mode === 'image' ? 'active-image' : ''}`}
-                onClick={() => updateActiveSession(s => ({ ...s, mode: 'image' }))}
+                className={`mode-tab ${activeSession.mode === 'prompt_master' ? 'active-prompt-master' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'prompt_master' }))}
+                title="Midjourney級のプロンプト忠実度・最高画質生成 (SDXL 1024×1024)"
               >
-                <ImageIcon size={14} />
-                <span>画像生成 (SD-Turbo)</span>
+                <Sparkles size={14} color="#f59e0b" />
+                <span>🎨 プロンプト追求</span>
+              </button>
+              <button
+                className={`mode-tab ${activeSession.mode === 'style_master' ? 'active-style-master' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'style_master' }))}
+                title="学習した画風のタッチで望むものを描く"
+              >
+                <Palette size={14} color="#ec4899" />
+                <span>🖌️ 画風継承</span>
               </button>
               <button
                 className={`mode-tab ${activeSession.mode === 'train' ? 'active-train' : ''}`}
@@ -1786,17 +2156,126 @@ export default function App() {
                 <span>画風学習 (LoRA)</span>
               </button>
               <button
+                className={`mode-tab ${activeSession.mode === 'image' ? 'active-image' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'image' }))}
+                title="0.1秒台の超高速プレビュー生成 (SD-Turbo)"
+              >
+                <ImageIcon size={14} />
+                <span>⚡ 高速プレビュー</span>
+              </button>
+              <button
                 className={`mode-tab ${activeSession.mode === 'bots' ? 'active-bots' : ''}`}
                 onClick={() => updateActiveSession(s => ({ ...s, mode: 'bots' }))}
               >
                 <Bot size={14} />
-                <span>🤖 ボット管理 (Studio)</span>
+                <span>🤖 ボット管理</span>
               </button>
             </div>
 
+            {/* Prompt Master Controls */}
+            {activeSession.mode === 'prompt_master' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', color: '#f59e0b', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={hqEnhancePrompt}
+                    onChange={(e) => setHqEnhancePrompt(e.target.checked)}
+                  />
+                  <span>🪄 Midjourney風 自動拡張</span>
+                </label>
+
+                {input.trim() && (
+                  <button
+                    type="button"
+                    className="enhance-preview-btn"
+                    onClick={handlePreviewEnhancedPrompt}
+                    disabled={isEnhancingPrompt}
+                    title="Vision LLM による英語拡張結果をプレビュー"
+                  >
+                    <Wand2 size={12} />
+                    <span>{isEnhancingPrompt ? '拡張中...' : '拡張プレビュー'}</span>
+                  </button>
+                )}
+
+                {/* Aspect Ratio Selector */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>比率:</span>
+                  <div style={{ display: 'flex', gap: 3 }}>
+                    {(Object.keys(HQ_ASPECT_RATIO_CONFIG) as AspectRatio[]).map((ratio) => (
+                      <button
+                        key={ratio}
+                        type="button"
+                        className={`aspect-ratio-btn ${activeSession.aspectRatio === ratio ? 'active' : ''}`}
+                        onClick={() => updateActiveSession(s => ({ ...s, aspectRatio: ratio }))}
+                        style={{ padding: '3px 6px', fontSize: '0.75rem', minWidth: '38px' }}
+                        title={HQ_ASPECT_RATIO_CONFIG[ratio].desc}
+                      >
+                        {ratio}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Style Master Controls */}
+            {activeSession.mode === 'style_master' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Palette size={14} color="#ec4899" />
+                  <span style={{ fontSize: '0.75rem', color: '#f472b6' }}>画風:</span>
+                  <select
+                    className="style-select"
+                    value={activeSession.loraName || ''}
+                    onChange={(e) => updateActiveSession(s => ({ ...s, loraName: e.target.value || undefined }))}
+                    style={{ padding: '3px 6px', fontSize: '0.75rem', borderColor: '#ec4899' }}
+                  >
+                    <option value="">(画風を選択)</option>
+                    {availableLoras.map((lora) => (
+                      <option key={lora} value={lora}>
+                        {lora}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>強度: {hqLoraScale}</span>
+                  <input
+                    type="range"
+                    min="0.2"
+                    max="1.3"
+                    step="0.05"
+                    value={hqLoraScale}
+                    onChange={(e) => setHqLoraScale(parseFloat(e.target.value))}
+                    style={{ width: '60px' }}
+                    className="param-slider"
+                  />
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>比率:</span>
+                  <div style={{ display: 'flex', gap: 3 }}>
+                    {(Object.keys(HQ_ASPECT_RATIO_CONFIG) as AspectRatio[]).map((ratio) => (
+                      <button
+                        key={ratio}
+                        type="button"
+                        className={`aspect-ratio-btn ${activeSession.aspectRatio === ratio ? 'active' : ''}`}
+                        onClick={() => updateActiveSession(s => ({ ...s, aspectRatio: ratio }))}
+                        style={{ padding: '3px 6px', fontSize: '0.75rem', minWidth: '38px' }}
+                        title={HQ_ASPECT_RATIO_CONFIG[ratio].desc}
+                      >
+                        {ratio}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Turbo Mode Controls */}
             {activeSession.mode === 'image' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                {/* LoRA Model Selector */}
                 {availableLoras.length > 0 && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span style={{ fontSize: '0.75rem', color: '#c084fc' }}>LoRA:</span>
@@ -1816,7 +2295,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Style Preset Selector */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <Palette size={14} color="#c4b5fd" />
                   <select
@@ -1833,7 +2311,6 @@ export default function App() {
                   </select>
                 </div>
 
-                {/* Aspect Ratio Selector */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <span style={{ fontSize: '0.75rem', color: '#9ca3af' }}>比率:</span>
                   <div style={{ display: 'flex', gap: 3 }}>
@@ -1854,6 +2331,38 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Enhanced Prompt Preview Banner */}
+          {enhancedPromptPreview && (
+            <div className="enhanced-prompt-preview-bar">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <Sparkles size={14} color="#f59e0b" />
+                <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#f59e0b' }}>
+                  Midjourney風 拡張英語プロンプトのプレビュー:
+                </span>
+              </div>
+              <div className="preview-text">{enhancedPromptPreview}</div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6, justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="preview-action-btn apply"
+                  onClick={() => {
+                    setInput(enhancedPromptPreview);
+                    setEnhancedPromptPreview(null);
+                  }}
+                >
+                  この英語プロンプトを入力欄に適用
+                </button>
+                <button
+                  type="button"
+                  className="preview-action-btn cancel"
+                  onClick={() => setEnhancedPromptPreview(null)}
+                >
+                  閉じる
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Quick Prompts Bar for Chat Mode with Active Bot */}
           {activeSession.mode === 'chat' && currentBot && currentBot.quick_prompts && currentBot.quick_prompts.length > 0 && (
@@ -1905,7 +2414,7 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <div className={`chat-input-box ${activeSession.mode === 'image' ? 'image-mode-focus' : ''}`}>
+            <div className={`chat-input-box ${activeSession.mode === 'prompt_master' ? 'prompt-master-focus' : activeSession.mode === 'style_master' ? 'style-master-focus' : activeSession.mode === 'image' ? 'image-mode-focus' : ''}`}>
               {/* Attachment Button for Vision Mode */}
               {activeSession.mode === 'chat' && (
                 <>
@@ -1932,8 +2441,12 @@ export default function App() {
                 ref={textareaRef}
                 className="chat-textarea"
                 placeholder={
-                  activeSession.mode === 'image'
-                    ? '生成したい画像のプロンプトを入力 (英語推奨, 画風と比率は上で選択可能)...'
+                  activeSession.mode === 'prompt_master'
+                    ? '【プロンプト追求】描きたい情景・ライティング・質感を日本語または英語で入力... (Shift+Enterで改行)'
+                    : activeSession.mode === 'style_master'
+                    ? '【画風継承】選択した画風で描いてほしいテーマを入力... (例: 夕暮れの海辺を散歩する少女)'
+                    : activeSession.mode === 'image'
+                    ? '【高速プレビュー】生成したい画像のプロンプトを入力 (SD-Turbo 0.1秒)...'
                     : currentBot
                     ? `${currentBot.name} へ質問を入力... (画像はCtrl+Vで貼り付け可能 / Shift+Enterで改行)`
                     : 'メッセージを入力... (画像はCtrl+Vで貼り付け可能 / Shift+Enterで改行)'
@@ -1945,18 +2458,18 @@ export default function App() {
                 rows={2}
               />
               <button
-                className={`send-button ${activeSession.mode === 'image' ? 'image-send' : ''}`}
+                className={`send-button ${activeSession.mode === 'prompt_master' ? 'prompt-master-send' : activeSession.mode === 'style_master' ? 'style-master-send' : activeSession.mode === 'image' ? 'image-send' : ''}`}
                 onClick={handleSubmit}
                 disabled={isGenerating || (!input.trim() && attachments.length === 0) || gpuStatus?.is_loading}
-                title={activeSession.mode === 'image' ? '画像を生成' : 'メッセージ送信'}
+                title={activeSession.mode === 'prompt_master' ? 'プロンプト追求 高品質画像を生成 (SDXL)' : activeSession.mode === 'style_master' ? '学習した画風で画像を生成 (SDXL+LoRA)' : activeSession.mode === 'image' ? '高速プレビュー生成' : 'メッセージ送信'}
               >
-                {activeSession.mode === 'image' ? <ImageIcon size={18} /> : <Send size={18} />}
+                {activeSession.mode === 'prompt_master' ? <Sparkles size={18} /> : activeSession.mode === 'style_master' ? <Palette size={18} /> : activeSession.mode === 'image' ? <ImageIcon size={18} /> : <Send size={18} />}
               </button>
             </div>
           )}
 
           <div className="input-footer">
-            <span>Powered by PyTorch CUDA & Qwen2.5-VL-7B (4-bit) + SD-Turbo</span>
+            <span>Powered by PyTorch CUDA & Qwen2.5-VL-7B (4-bit) + SDXL (1024px) / SD-Turbo</span>
             <span>Target GPU: GeForce RTX 4070 Ti (12GB)</span>
           </div>
         </div>
