@@ -158,6 +158,12 @@ class ImageGenEngine:
         preset = STYLE_PRESETS.get(style, STYLE_PRESETS["none"])
         styled_prompt = f"{preset['prompt_prefix']}{prompt}{preset['prompt_suffix']}"
 
+        # Trigger word injection for trained LoRA
+        if lora_name:
+            style_trigger = os.path.splitext(lora_name)[0]
+            if style_trigger and style_trigger.lower() not in styled_prompt.lower():
+                styled_prompt = f"{styled_prompt}, in style of {style_trigger}"
+
         # Ensure width and height are divisible by 8 and clamped safely
         safe_width = max(256, min(768, (int(width) // 8) * 8))
         safe_height = max(256, min(768, (int(height) // 8) * 8))

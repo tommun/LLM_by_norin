@@ -201,7 +201,7 @@ export default function App() {
 
   // Style Training States
   const [trainStyleName, setTrainStyleName] = useState('');
-  const [trainSteps, setTrainSteps] = useState(300);
+  const [trainSteps, setTrainSteps] = useState(500);
   const [trainAutoCaption, setTrainAutoCaption] = useState(true);
   const [trainImages, setTrainImages] = useState<string[]>([]);
   const [datasets, setDatasets] = useState<any[]>([]);
@@ -1775,12 +1775,12 @@ export default function App() {
                   <h3>2. 学習設定 & 実行</h3>
                   <div style={{ marginBottom: 14 }}>
                     <label style={{ display: 'block', fontSize: '0.8rem', color: '#94a3b8', marginBottom: 4 }}>
-                      学習ステップ数: {trainSteps} Steps (目安: 300 stepsで約2分)
+                      学習ステップ数: {trainSteps} Steps (高精度推奨: 400〜600 steps / 約2〜3分)
                     </label>
                     <input
                       type="range"
                       min="100"
-                      max="800"
+                      max="1200"
                       step="50"
                       value={trainSteps}
                       onChange={(e) => setTrainSteps(parseInt(e.target.value))}

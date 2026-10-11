@@ -124,9 +124,9 @@ def run_lora_training(
     style_name: str,
     output_dir: str = "loras",
     model_id: str = "stabilityai/sd-turbo",
-    total_steps: int = 400,
+    total_steps: int = 500,
     learning_rate: float = 1e-4,
-    lora_rank: int = 8,
+    lora_rank: int = 16,
     batch_size: int = 1,
     auto_caption: bool = True,
     vision_engine = None,
@@ -242,12 +242,12 @@ def run_lora_training(
         torch.cuda.empty_cache()
         gc.collect()
 
-        # 4. Attach LoRA to UNet
+        # 4. Attach LoRA to UNet with high-fidelity rank and expanded attention modules
         tracker.status_message = "Configuring LoRA adapters on UNet..."
         lora_config = LoraConfig(
             r=lora_rank,
             lora_alpha=lora_rank * 2,
-            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+            target_modules=["to_k", "to_q", "to_v", "to_out.0", "ff.net.0.proj", "ff.net.2"],
             init_lora_weights="gaussian",
         )
         unet.enable_gradient_checkpointing()
@@ -255,13 +255,18 @@ def run_lora_training(
         unet_lora.print_trainable_parameters()
         unet_lora.train()
 
-        # Optimizer
+        # Optimizer with Cosine Learning Rate Schedule for deep style convergence
         optimizer = torch.optim.AdamW(
             unet_lora.parameters(),
             lr=learning_rate,
             betas=(0.9, 0.999),
             weight_decay=1e-2,
             eps=1e-8,
+        )
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=total_steps,
+            eta_min=learning_rate * 0.1
         )
 
         num_images = len(cached_latents)
@@ -299,6 +304,7 @@ def run_lora_training(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(unet_lora.parameters(), 1.0)
             optimizer.step()
+            lr_scheduler.step()
             optimizer.zero_grad()
 
             step += 1

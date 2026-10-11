@@ -192,6 +192,12 @@ class HighQualityImageEngine:
                 final_prompt = enhanced
                 enhanced_prompt_text = enhanced
 
+        # Trigger word injection for trained LoRA (Ensures style is triggered strongly)
+        if lora_name:
+            style_trigger = os.path.splitext(lora_name)[0]
+            if style_trigger and style_trigger.lower() not in final_prompt.lower():
+                final_prompt = f"{final_prompt}, in style of {style_trigger}"
+
         # Dynamic VRAM handover: Offload LLM to CPU RAM so SDXL gets 100% full GPU VRAM (fast inference)
         if model_engine is not None and hasattr(model_engine, "offload_to_cpu"):
             model_engine.offload_to_cpu()
