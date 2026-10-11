@@ -258,6 +258,23 @@ export default function App() {
   }, [activeSession.messages, isGenerating]);
 
   // Poll GPU Status & fetch LoRAs
+  const [isClearingVram, setIsClearingVram] = useState(false);
+
+  const handleClearVramCache = async () => {
+    setIsClearingVram(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/gpu/clear-cache`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setGpuStatus(data);
+      }
+    } catch (e: any) {
+      console.error('Failed to clear VRAM cache:', e);
+    } finally {
+      setIsClearingVram(false);
+    }
+  };
+
   const fetchGpuStatus = async () => {
     try {
       const res = await fetch(`${BACKEND_URL}/api/gpu`);
@@ -1225,6 +1242,16 @@ export default function App() {
                 style={{ width: `${Math.min(gpuStatus?.vram_percent || 0, 100)}%` }}
               />
             </div>
+            <button
+              type="button"
+              className="vram-clear-btn"
+              onClick={handleClearVramCache}
+              disabled={isClearingVram}
+              title="PyTorchの未使用VRAMキャッシュを解放してメモリを軽くします"
+            >
+              <RefreshCw size={11} className={isClearingVram ? 'animate-spin' : ''} />
+              <span>{isClearingVram ? '解放中...' : '🧹 VRAMキャッシュを解放'}</span>
+            </button>
           </div>
 
           <div className="models-list">

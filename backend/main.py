@@ -102,6 +102,21 @@ def get_status():
     status["hq_is_loading"] = hq_image_engine.is_loading
     return status
 
+@app.post("/api/gpu/clear-cache")
+def clear_gpu_cache():
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    status = engine.get_gpu_info()
+    status["image_model_id"] = image_engine.model_id
+    status["image_model_loaded"] = image_engine.is_ready
+    status["image_is_loading"] = image_engine.is_loading
+    status["hq_model_id"] = hq_image_engine.model_id
+    status["hq_model_loaded"] = hq_image_engine.is_ready
+    status["hq_is_loading"] = hq_image_engine.is_loading
+    return status
+
 @app.post("/api/model/load")
 def load_model_endpoint(req: ModelLoadRequest, background_tasks: BackgroundTasks):
     if engine.is_loading:
