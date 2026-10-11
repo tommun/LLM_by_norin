@@ -502,13 +502,13 @@ export default function App() {
       category: '画像生成',
       avatar: '🪄',
       avatar_image: '',
-      system_prompt: 'あなたは画像生成AI（Midjourney v6およびStable Diffusion XL / SDXL）専門の世界最高峰プロンプトエンジニアです。\nユーザーからイラストの追加要素や修正希望（例：「麦わら帽子を被せて」「夕暮れにして」「雨の街並み」など）を受け取ったら、会話履歴にある元のプロンプトと融合させ、必ず解説と ```prompt のコードブロックで最新の英語プロンプトを出力してください。',
+      system_prompt: 'あなたは画像生成AI（Midjourney v6およびSDXL）専門のプロンプト職人AIです。\nユーザーから追加したい要素や修正指示（例：「麦わら帽子を被せて」「服を脱いで」「夕暮れにして」など）を受け取ったら、元のプロンプトと融合し、直ちに最新の英語プロンプトを ```prompt コードブロックで生成してください。\n中国語は一切出力禁止。解説はすべて自然な日本語で行い、確認・質問だけで会話を終えず即座にプロンプトを出力してください。',
       greeting: 'プロンプト職人AIです！この画像のプロンプトにどんな要素を追加・変更しましょうか？',
       quick_prompts: []
     };
 
     const newSessionId = `session-${Date.now()}`;
-    const greetingText = `🎨 **この画像のプロンプトを対話で改善します！**\n\n**【現在のプロンプト】**\n\`\`\`prompt\n${originalPrompt}\n\`\`\`\n\nどのような要素を追加・修正したいですか？\n（例:「麦わら帽子を被せて」「夕暮れの光を強くして」「雨の街並みに変更して」など、日本語で入力して送信してください！）`;
+    const greetingText = `🎨 **この画像のプロンプトを対話で改善します！**\n\n**【現在のプロンプト】**\n\`\`\`prompt\n${originalPrompt}\n\`\`\`\n\n追加・変更したい要素を入力して送信してください！（例:「麦わら帽子を被せて」「夕暮れの光を強くして」「服を脱いで」など）\n送信すると、自動的に最新の英語プロンプトが生成され、ワンクリックで画像生成できます。`;
 
     const initialMessages: Message[] = [
       {
@@ -1005,18 +1005,55 @@ export default function App() {
     // ボットが設定されている場合はそのシステムプロンプトを最優先
     const effectiveBot = bots.find(b => b.id === activeSession.botId);
     const effectiveSystemPrompt = effectiveBot?.system_prompt || (activeSession.botId === 'prompt_craftsman' ? (
-      'あなたは画像生成AI（Midjourney v6およびStable Diffusion XL / SDXL）専門の世界最高峰プロンプトエンジニアです。\nユーザーからイラストの追加要素や修正希望（例：「麦わら帽子を被せて」「夕暮れにして」「雨の街並み」など）を受け取ったら、会話履歴にある元のプロンプトと融合させ、必ず解説と ```prompt のコードブロックで最新の英語プロンプトを出力してください。'
+      'あなたは画像生成AI（Midjourney v6およびStable Diffusion XL / SDXL）専門のプロンプト職人AIです。\nユーザーから追加したい要素や修正指示（例：「麦わら帽子を被せて」「服を脱いで」「夕暮れにして」「笑顔にして」など）を受け取ったら、元のプロンプトと融合し、直ちに最新の英語プロンプトを生成してください。\n\n【絶対遵守ルール】\n1. 【中国語は一切禁止】: 中国語（中文）は絶対に出力してはなりません。すべて自然な日本語で回答してください。\n2. 【確認・質問・案内のみの返答は絶対禁止】: 「わかりました、要望を教えてください」などの確認や質問だけで会話を終えることは固く禁止します。ユーザーから短い言葉や単語が1つでも送られたら、即座にそれを反映した英語プロンプトを出力してください。\n3. 【コードブロック必須】: 更新した英語プロンプトは必ず ```prompt コードブロックで囲んで出力してください。'
     ) : systemPrompt);
 
-    const requestPayload = {
-      messages: [
-        ...(effectiveSystemPrompt ? [{ role: 'system', content: effectiveSystemPrompt }] : []),
-        ...newMessages.filter((m) => !m.isImage).map((m) => ({
+    const isPromptCraftsman = activeSession.botId === 'prompt_craftsman';
+    const payloadMessages: Array<{ role: string; content: string; images?: string[] | null }> = [];
+
+    if (effectiveSystemPrompt) {
+      payloadMessages.push({ role: 'system', content: effectiveSystemPrompt });
+    }
+
+    if (isPromptCraftsman) {
+      for (const m of newMessages.filter((m) => !m.isImage)) {
+        if (m.id.startsWith('greeting-') && m.content.includes('```prompt')) {
+          const promptMatch = m.content.match(/```prompt\s*([\s\S]*?)```/i);
+          const basePrompt = promptMatch ? promptMatch[1].trim() : '';
+          payloadMessages.push({
+            role: 'user',
+            content: `【現在の画像生成プロンプト】\n\`\`\`prompt\n${basePrompt}\n\`\`\`\n上記のプロンプトをベースにして、私の希望する要素を追加・修正した新しい高品質な英語プロンプト（Midjourney/SDXL用）を作成してください。`
+          });
+          payloadMessages.push({
+            role: 'assistant',
+            content: `承知いたしました！現在のプロンプトを確認しました。追加したい要素や修正したい内容（例：「麦わら帽子を被せて」「夕暮れの光を強くして」「服を脱いで」など）を教えていただければ、直ちに最新の英語プロンプトを \`\`\`prompt コードブロック形式で出力します。どのような要素を追加・修正しますか？`
+          });
+        } else if (m.role === 'user') {
+          payloadMessages.push({
+            role: 'user',
+            content: `【要望・修正指示】: ${m.content}\n（※重要指示: 上記の要望を現在のプロンプトに即座に反映し、必ず最新の英語プロンプトを \`\`\`prompt コードブロックで出力してください。「承知しました」「要望を教えてください」等の確認や質問の返信だけで終わることは絶対に禁止です。今すぐプロンプトを生成してください。）`,
+            images: m.images || null
+          });
+        } else {
+          payloadMessages.push({
+            role: m.role,
+            content: m.content,
+            images: m.images || null
+          });
+        }
+      }
+    } else {
+      for (const m of newMessages.filter((m) => !m.isImage)) {
+        payloadMessages.push({
           role: m.role,
           content: m.content,
           images: m.images || null
-        }))
-      ],
+        });
+      }
+    }
+
+    const requestPayload = {
+      messages: payloadMessages,
       temperature: temperature,
       max_new_tokens: maxTokens,
       top_p: 0.9
