@@ -2364,6 +2364,9 @@ body {
   border-radius: 0 !important;
   background: #0b0f19 !important;
   padding: 12px 14px !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
 }
 
 .code-block-wrapper code {
@@ -2371,6 +2374,9 @@ body {
   font-family: 'Fira Code', Consolas, monospace;
   font-size: 0.88rem;
   line-height: 1.6;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
 }
 
 /* Empty Response Hint & Retry Button */

@@ -111,7 +111,8 @@ class HighQualityImageEngine:
             "Transform the user's concept into an elaborate, masterfully composed English prompt. "
             "Detail the subject, lighting (e.g., golden hour, cinematic volumetric, chiaroscuro), "
             "textures, intricate details, artistic style, lens/shot angle, and overall mood. "
-            "Keep it under 90 words. Output ONLY the English prompt without any preamble, quotes, or markdown."
+            "Ensure the sentence is complete and never cut off mid-sentence. "
+            "Output ONLY the English prompt without any preamble, quotes, or markdown."
         )
 
         try:
@@ -122,7 +123,7 @@ class HighQualityImageEngine:
             tokens = []
             for token in model_engine.stream_generate(
                 messages=messages,
-                max_new_tokens=150,
+                max_new_tokens=350,
                 temperature=0.7
             ):
                 tokens.append(token)

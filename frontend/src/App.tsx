@@ -521,7 +521,7 @@ export default function App() {
 
     const newSession: ChatSession = {
       id: newSessionId,
-      title: `プロンプト改善: ${originalPrompt.slice(0, 10)}...`,
+      title: `プロンプト改善: ${originalPrompt.slice(0, 18)}...`,
       createdAt: Date.now(),
       messages: initialMessages,
       mode: 'chat',
