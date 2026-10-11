@@ -2289,3 +2289,121 @@ body {
   box-shadow: 0 6px 16px rgba(236, 72, 153, 0.5);
 }
 
+/* Code Block Wrapper & Action Buttons in Chat */
+.code-block-wrapper {
+  margin: 12px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: #0f172a;
+}
+
+.code-block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: rgba(15, 23, 42, 0.85);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.code-block-lang {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #f59e0b;
+  letter-spacing: 0.05em;
+}
+
+.code-block-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.code-copy-btn,
+.code-to-gen-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.code-copy-btn {
+  background: #1e293b;
+  color: #94a3b8;
+  border: 1px solid #334155;
+}
+
+.code-copy-btn:hover {
+  background: #334155;
+  color: #f1f5f9;
+}
+
+.code-to-gen-btn {
+  background: linear-gradient(135deg, #d97706 0%, #f59e0b 100%);
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 2px 6px rgba(245, 158, 11, 0.3);
+}
+
+.code-to-gen-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(245, 158, 11, 0.5);
+}
+
+.code-block-wrapper pre {
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: #0b0f19 !important;
+  padding: 12px 14px !important;
+}
+
+.code-block-wrapper code {
+  color: #e2e8f0;
+  font-family: 'Fira Code', Consolas, monospace;
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+/* Empty Response Hint & Retry Button */
+.empty-response-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  font-size: 0.85rem;
+}
+
+.retry-inline-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: #ef4444;
+  color: #ffffff;
+  border: none;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.retry-inline-btn:hover {
+  background: #dc2626;
+  transform: translateY(-1px);
+}
+
+

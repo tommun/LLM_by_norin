@@ -485,20 +485,20 @@ export default function App() {
       category: '画像生成',
       avatar: '🪄',
       avatar_image: '',
-      system_prompt: 'あなたはMidjourney v6およびSDXLのプロンプトエンジニアです。ユーザーの要望や追加したい要素を反映し、高品質な英語プロンプトを提案・更新してください。更新したプロンプトは必ず ```prompt または ``` コードブロックで提示してください。',
+      system_prompt: 'あなたは画像生成AI（Midjourney v6およびStable Diffusion XL / SDXL）専門の世界最高峰プロンプトエンジニアです。\nユーザーからイラストの追加要素や修正希望（例：「麦わら帽子を被せて」「夕暮れにして」「雨の街並み」など）を受け取ったら、会話履歴にある元のプロンプトと融合させ、必ず解説と ```prompt のコードブロックで最新の英語プロンプトを出力してください。',
       greeting: 'プロンプト職人AIです！この画像のプロンプトにどんな要素を追加・変更しましょうか？',
       quick_prompts: []
     };
 
     const newSessionId = `session-${Date.now()}`;
-    const greetingText = `🎨 **この画像のプロンプトを対話で改善します！**\n\n**【現在のプロンプト】**\n\`\`\`prompt\n${originalPrompt}\n\`\`\`\n\nどのような要素を追加・修正したいですか？\n（例:「麦わら帽子を被せて」「夕暮れの光を強くして」「雨の街並みに変更して」など、日本語で自由にお伝えください！）`;
+    const greetingText = `🎨 **この画像のプロンプトを対話で改善します！**\n\n**【現在のプロンプト】**\n\`\`\`prompt\n${originalPrompt}\n\`\`\`\n\nどのような要素を追加・修正したいですか？\n（例:「麦わら帽子を被せて」「夕暮れの光を強くして」「雨の街並みに変更して」など、日本語で入力して送信してください！）`;
 
     const initialMessages: Message[] = [
       {
         id: `greeting-${Date.now()}`,
         role: 'assistant',
         content: greetingText,
-        images: imageUrl ? [imageUrl] : undefined
+        imageUrl: imageUrl
       }
     ];
 
@@ -966,7 +966,12 @@ export default function App() {
     };
 
     const assistantMsgId = `ai-${Date.now()}`;
-    const newMessages = [...activeSession.messages, userMsg];
+    
+    // 直前に空のアシスタント返答が残っていればクリーンアップして重複を防ぐ
+    const cleanedExistingMessages = activeSession.messages.filter(
+      (m, idx) => !(idx === activeSession.messages.length - 1 && m.role === 'assistant' && !m.content.trim() && !m.imageUrl && !m.isImage)
+    );
+    const newMessages = [...cleanedExistingMessages, userMsg];
 
     // Auto rename tab title if default
     updateActiveSession(s => {
@@ -980,9 +985,15 @@ export default function App() {
 
     setIsGenerating(true);
 
+    // ボットが設定されている場合はそのシステムプロンプトを最優先
+    const effectiveBot = bots.find(b => b.id === activeSession.botId);
+    const effectiveSystemPrompt = effectiveBot?.system_prompt || (activeSession.botId === 'prompt_craftsman' ? (
+      'あなたは画像生成AI（Midjourney v6およびStable Diffusion XL / SDXL）専門の世界最高峰プロンプトエンジニアです。\nユーザーからイラストの追加要素や修正希望（例：「麦わら帽子を被せて」「夕暮れにして」「雨の街並み」など）を受け取ったら、会話履歴にある元のプロンプトと融合させ、必ず解説と ```prompt のコードブロックで最新の英語プロンプトを出力してください。'
+    ) : systemPrompt);
+
     const requestPayload = {
       messages: [
-        ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+        ...(effectiveSystemPrompt ? [{ role: 'system', content: effectiveSystemPrompt }] : []),
         ...newMessages.filter((m) => !m.isImage).map((m) => ({
           role: m.role,
           content: m.content,
@@ -1026,7 +1037,18 @@ export default function App() {
 
             try {
               const data = JSON.parse(jsonStr);
-              if (data.token) {
+              if (data.error) {
+                assistantText = `⚠️ エラーが発生しました: ${data.error}`;
+                updateActiveSession(s => {
+                  const updated = [...s.messages];
+                  const lastIdx = updated.length - 1;
+                  updated[lastIdx] = {
+                    ...updated[lastIdx],
+                    content: assistantText
+                  };
+                  return { ...s, messages: updated };
+                });
+              } else if (data.token) {
                 assistantText += data.token;
                 updateActiveSession(s => {
                   const updated = [...s.messages];
@@ -1044,6 +1066,19 @@ export default function App() {
             }
           }
         }
+      }
+
+      if (!assistantText.trim()) {
+        assistantText = '⚠️ 回答が生成されませんでした。推論サーバーの接続状況を確認し、もう一度お試しください。';
+        updateActiveSession(s => {
+          const updated = [...s.messages];
+          const lastIdx = updated.length - 1;
+          updated[lastIdx] = {
+            ...updated[lastIdx],
+            content: assistantText
+          };
+          return { ...s, messages: updated };
+        });
       }
     } catch (err: any) {
       updateActiveSession(s => {
@@ -2147,9 +2182,68 @@ export default function App() {
                       </div>
                     ) : (
                       <>
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {msg.content}
-                        </ReactMarkdown>
+                        {!msg.content && !isGenerating ? (
+                          <div className="empty-response-hint">
+                            <span>⚠️ 回答が生成されませんでした（通信タイムアウトまたは未受信）</span>
+                            <button
+                              type="button"
+                              className="retry-inline-btn"
+                              onClick={handleRegenerate}
+                            >
+                              <RotateCw size={12} /> もう一度生成
+                            </button>
+                          </div>
+                        ) : (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              code({ node, inline, className, children, ...props }: any) {
+                                const match = /language-(\w+)/.exec(className || '');
+                                const codeString = String(children).replace(/\n$/, '');
+                                if (!inline) {
+                                  return (
+                                    <div className="code-block-wrapper">
+                                      <div className="code-block-header">
+                                        <span className="code-block-lang">
+                                          <Sparkles size={12} color="#f59e0b" />
+                                          {match ? match[1].toUpperCase() : 'PROMPT'}
+                                        </span>
+                                        <div className="code-block-actions">
+                                          <button
+                                            type="button"
+                                            className="code-copy-btn"
+                                            onClick={() => copyToClipboard(`code-${Date.now()}`, codeString)}
+                                            title="プロンプトをコピー"
+                                          >
+                                            <Copy size={12} /> コピー
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="code-to-gen-btn"
+                                            onClick={() => handleSendPromptToGenerator(codeString)}
+                                            title="このプロンプトで画像生成"
+                                          >
+                                            <Sparkles size={12} color="#f59e0b" /> このプロンプトで画像生成
+                                          </button>
+                                        </div>
+                                      </div>
+                                      <pre className={className}>
+                                        <code {...props}>{children}</code>
+                                      </pre>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <code className={className} {...props}>
+                                    {children}
+                                  </code>
+                                );
+                              }
+                            }}
+                          >
+                            {msg.content}
+                          </ReactMarkdown>
+                        )}
                         {isGenerating && msg.id === activeSession.messages[activeSession.messages.length - 1]?.id && (
                           <span className="cursor-blink" />
                         )}
@@ -2191,7 +2285,7 @@ export default function App() {
                       </button>
                       {/* もしアシスタントの返答内にプロンプトがあればワンクリックで画像生成へ転送 */}
                       {(() => {
-                        const codeMatch = msg.content.match(/```(?:prompt)?\s*([\s\S]*?)```/);
+                        const codeMatch = msg.content.match(/```(?:prompt|markdown|text)?\s*([\s\S]*?)```/i);
                         const extractedPrompt = codeMatch ? codeMatch[1].trim() : null;
                         if (!extractedPrompt && !msg.content.toLowerCase().includes('prompt:')) return null;
                         const targetPrompt = extractedPrompt || msg.content;
