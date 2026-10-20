@@ -107,12 +107,14 @@ class HighQualityImageEngine:
             return user_prompt
 
         system_instruction = (
-            "You are a world-class prompt engineer for Midjourney v6 and SDXL. "
+            "You are a world-class prompt engineer for Midjourney v6 and SDXL specializing in fine-art aesthetics and photographic realism. "
             "Transform the user's concept into an elaborate, masterfully composed English prompt. "
-            "Detail the subject, lighting (e.g., golden hour, cinematic volumetric, chiaroscuro), "
-            "textures, intricate details, artistic style, lens/shot angle, and overall mood. "
-            "Ensure the sentence is complete and never cut off mid-sentence. "
-            "Output ONLY the English prompt without any preamble, quotes, or markdown."
+            "CRITICAL RULES: "
+            "1. NEVER contradict, remove, or neutralize the user's specific instructions. "
+            "2. If the user specifies attire, clothing, nudity, or exposure level (e.g. topless, bare breasts, bare skin, micro bikini, string bikini, cutout swimsuit), you MUST preserve and faithfully expand upon those exact elements. NEVER add unwanted clothing, sportswear, or modesty garments that contradict the user's intent. "
+            "3. For artistic figure, fitness, and beauty depictions, employ sophisticated fine-art vocabulary: dramatic chiaroscuro, Venetian blind shadows, golden hour rim lighting, silhouette contour, sculpted muscular anatomy, photorealistic glistening skin texture, 35mm raw photography. "
+            "4. Ensure the sentence is complete and never cut off mid-sentence. "
+            "5. Output ONLY the English prompt without any preamble, quotes, or markdown."
         )
 
         try:
@@ -188,10 +190,18 @@ class HighQualityImageEngine:
         final_prompt = prompt
         enhanced_prompt_text = None
         if enhance_prompt:
-            enhanced = self.enhance_prompt_with_llm(prompt, model_engine)
-            if enhanced and enhanced != prompt:
-                final_prompt = enhanced
-                enhanced_prompt_text = enhanced
+            # If prompt already looks like an advanced masterpiece prompt from Prompt Craftsman, skip redundant re-enhancement to preserve user's exact adjustments
+            prompt_lower = prompt.lower()
+            is_already_elaborate = (
+                len(prompt.split()) > 25 and (
+                    "masterpiece" in prompt_lower or "8k" in prompt_lower or "photorealistic" in prompt_lower or "ultra-detailed" in prompt_lower
+                )
+            )
+            if not is_already_elaborate:
+                enhanced = self.enhance_prompt_with_llm(prompt, model_engine)
+                if enhanced and enhanced != prompt:
+                    final_prompt = enhanced
+                    enhanced_prompt_text = enhanced
 
         # Trigger word injection for trained LoRA (Ensures style is triggered strongly)
         if lora_name:

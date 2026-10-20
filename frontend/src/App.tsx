@@ -33,7 +33,8 @@ import {
   Play,
   Square,
   Folder,
-  Wand2
+  Wand2,
+  Shield
 } from 'lucide-react';
 import './style.css';
 
@@ -539,14 +540,14 @@ export default function App() {
   };
 
   // チャットから画像生成タブへプロンプトを転送して即座に生成画面へ切り替え
-  const handleSendPromptToGenerator = (promptText: string) => {
+  const handleSendPromptToGenerator = (promptText: string, negativeText?: string) => {
     const targetMode = activeSession.loraName ? 'style_master' : 'prompt_master';
     const newSessionId = `session-${Date.now()}`;
     const modeTitle = targetMode === 'style_master' ? '画風継承' : 'プロンプト追求';
 
     const newSession: ChatSession = {
       id: newSessionId,
-      title: `${modeTitle}: ${promptText.slice(0, 12)}...`,
+      title: `${modeTitle}: ${promptText.slice(0, 18)}...`,
       createdAt: Date.now(),
       messages: [],
       mode: targetMode,
@@ -555,6 +556,11 @@ export default function App() {
       loraName: activeSession.loraName
     };
 
+    // チャットAIによって精緻に作成されたプロンプトは、画像生成時に再拡張（二重介入）されないようオフにし、ダイレクト反映する
+    setHqEnhancePrompt(false);
+    if (negativeText) {
+      setHqNegativePrompt(negativeText);
+    }
     setSessions(prev => [newSession, ...prev]);
     setActiveSessionId(newSessionId);
     setInput(promptText);
@@ -1005,7 +1011,7 @@ export default function App() {
     // ボットが設定されている場合はそのシステムプロンプトを最優先
     const effectiveBot = bots.find(b => b.id === activeSession.botId);
     const effectiveSystemPrompt = effectiveBot?.system_prompt || (activeSession.botId === 'prompt_craftsman' ? (
-      'あなたは画像生成AI（Midjourney v6およびStable Diffusion XL / SDXL）専門のプロンプト職人AIです。\nユーザーから追加したい要素や修正指示（例：「麦わら帽子を被せて」「服を脱いで」「夕暮れにして」「笑顔にして」など）を受け取ったら、元のプロンプトと融合し、直ちに最新の英語プロンプトを生成してください。\n\n【絶対遵守ルール】\n1. 【中国語は一切禁止】: 中国語（中文）は絶対に出力してはなりません。すべて自然な日本語で回答してください。\n2. 【確認・質問・案内のみの返答は絶対禁止】: 「わかりました、要望を教えてください」などの確認や質問だけで会話を終えることは固く禁止します。ユーザーから短い言葉や単語が1つでも送られたら、即座にそれを反映した英語プロンプトを出力してください。\n3. 【コードブロック必須】: 更新した英語プロンプトは必ず ```prompt コードブロックで囲んで出力してください。'
+      'あなたは画像生成AI（Midjourney v6およびSDXL）専門の最高峰プロンプト職人AIです。\nユーザーからの追加要素や修正指示（例：「布・ブラを取り除く」「マイクロビキニにする」「夕暮れの陰影を強調する」など）を受け取ったら、元のプロンプトと融合し、ユーザーの意図を100%最優先にした最新の英語プロンプトおよび除外プロンプト（Negative Prompt）を出力してください。\n\n【絶対遵守ルール】\n1. 【ユーザー指示の絶対遵守・勝手な衣服の追加禁止】: ユーザーが求めた衣装指定（マイクロビキニ、ストリングビキニ、露出、トップレス、素肌等）や布の除去を、一般的なスポーツウェアや無難な服で勝手に上書き・無効化することは固く禁止します。\n2. 【芸術的ボディライン・陰影の最高峰表現】: フィットネスや美術デッサンにおける人体の美しさ・引き締まった筋肉美・しなやかな曲線を際立たせるため、美術・写真専門語彙（chiaroscuro, dramatic slatted window blind shadows, golden hour rim lighting, silhouette contour, sculpted physique, glistening skin texture, 35mm raw photography）を巧みに駆使してください。\n3. 【中国語は一切禁止】: すべて自然な日本語で回答してください。\n4. 【フォーマット必須】: 回答には必ず ```prompt（英語プロンプト）と ```negative（不要な衣服や破綻を防ぐ除外プロンプト）の両コードブロックを含めてください。'
     ) : systemPrompt);
 
     const isPromptCraftsman = activeSession.botId === 'prompt_craftsman';
@@ -1026,12 +1032,12 @@ export default function App() {
           });
           payloadMessages.push({
             role: 'assistant',
-            content: `承知いたしました！現在のプロンプトを確認しました。追加したい要素や修正したい内容（例：「麦わら帽子を被せて」「夕暮れの光を強くして」「服を脱いで」など）を教えていただければ、直ちに最新の英語プロンプトを \`\`\`prompt コードブロック形式で出力します。どのような要素を追加・修正しますか？`
+            content: `承知いたしました！現在のプロンプトを確認しました。追加したい要素や修正したい内容（例：「肌色の布をなくす」「マイクロビキニにする」「光と影の陰影を強調する」など）を教えていただければ、直ちに最新の英語プロンプトを \`\`\`prompt コードブロック、および除外設定を \`\`\`negative コードブロックで出力します。どのような要素を追加・修正しますか？`
           });
         } else if (m.role === 'user') {
           payloadMessages.push({
             role: 'user',
-            content: `【要望・修正指示】: ${m.content}\n（※重要指示: 上記の要望を現在のプロンプトに即座に反映し、必ず最新の英語プロンプトを \`\`\`prompt コードブロックで出力してください。「承知しました」「要望を教えてください」等の確認や質問の返信だけで終わることは絶対に禁止です。今すぐプロンプトを生成してください。）`,
+            content: `【要望・修正指示】: ${m.content}\n（※重要指示: 上記の要望・修正を現在のプロンプトに最優先で反映し、勝手な衣服の追加や意図の改変・無難化は絶対に行わず、最新の英語プロンプトを \`\`\`prompt コードブロック、および不要な衣服や破綻を防ぐ除外プロンプトを \`\`\`negative コードブロックで出力してください。「承知しました」等の確認だけで終わらず今すぐ生成してください。）`,
             images: m.images || null
           });
         } else {
@@ -2265,12 +2271,28 @@ export default function App() {
                                 const match = /language-(\w+)/.exec(className || '');
                                 const codeString = String(children).replace(/\n$/, '');
                                 if (!inline) {
+                                  const lang = match ? match[1].toLowerCase() : 'prompt';
+                                  const isNegative = lang === 'negative';
+
+                                  // 同じメッセージ内に negative ブロックがあればプロンプト転送時に一緒に引き継ぐ
+                                  const negMatch = msg.content.match(/```(?:negative)\s*([\s\S]*?)```/i);
+                                  const associatedNegative = negMatch ? negMatch[1].trim() : undefined;
+
                                   return (
-                                    <div className="code-block-wrapper">
+                                    <div className={`code-block-wrapper ${isNegative ? 'is-negative' : ''}`}>
                                       <div className="code-block-header">
                                         <span className="code-block-lang">
-                                          <Sparkles size={12} color="#f59e0b" />
-                                          {match ? match[1].toUpperCase() : 'PROMPT'}
+                                          {isNegative ? (
+                                            <>
+                                              <Shield size={12} color="#f87171" />
+                                              NEGATIVE PROMPT
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Sparkles size={12} color="#f59e0b" />
+                                              {lang.toUpperCase()}
+                                            </>
+                                          )}
                                         </span>
                                         <div className="code-block-actions">
                                           <button
@@ -2281,14 +2303,28 @@ export default function App() {
                                           >
                                             <Copy size={12} /> コピー
                                           </button>
-                                          <button
-                                            type="button"
-                                            className="code-to-gen-btn"
-                                            onClick={() => handleSendPromptToGenerator(codeString)}
-                                            title="このプロンプトで画像生成"
-                                          >
-                                            <Sparkles size={12} color="#f59e0b" /> このプロンプトで画像生成
-                                          </button>
+                                          {isNegative ? (
+                                            <button
+                                              type="button"
+                                              className="code-to-neg-btn"
+                                              onClick={() => {
+                                                setHqNegativePrompt(codeString);
+                                                alert('除外設定（Negative Prompt）に適用しました！');
+                                              }}
+                                              title="除外プロンプトに適用"
+                                            >
+                                              <Shield size={12} /> 除外設定に適用
+                                            </button>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              className="code-to-gen-btn"
+                                              onClick={() => handleSendPromptToGenerator(codeString, associatedNegative)}
+                                              title="このプロンプトで画像生成（自動拡張による歪みをオフにして忠実に生成）"
+                                            >
+                                              <Sparkles size={12} color="#f59e0b" /> このプロンプトで画像生成
+                                            </button>
+                                          )}
                                         </div>
                                       </div>
                                       <pre className={className}>
@@ -2351,12 +2387,14 @@ export default function App() {
                       {(() => {
                         const codeMatch = msg.content.match(/```(?:prompt|markdown|text)?\s*([\s\S]*?)```/i);
                         const extractedPrompt = codeMatch ? codeMatch[1].trim() : null;
+                        const negMatch = msg.content.match(/```(?:negative)\s*([\s\S]*?)```/i);
+                        const extractedNegative = negMatch ? negMatch[1].trim() : undefined;
                         if (!extractedPrompt && !msg.content.toLowerCase().includes('prompt:')) return null;
                         const targetPrompt = extractedPrompt || msg.content;
                         return (
                           <button
                             className="action-btn prompt-to-image-btn"
-                            onClick={() => handleSendPromptToGenerator(targetPrompt)}
+                            onClick={() => handleSendPromptToGenerator(targetPrompt, extractedNegative)}
                             title="このプロンプトで画像生成画面へ移動して生成"
                           >
                             <Sparkles size={14} color="#f59e0b" />
