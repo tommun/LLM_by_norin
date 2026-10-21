@@ -990,9 +990,9 @@ export default function App() {
 
     const assistantMsgId = `ai-${Date.now()}`;
     
-    // 直前に空のアシスタント返答が残っていればクリーンアップして重複を防ぐ
+    // 直前に空またはエラー（⚠️）のアシスタント返答が残っていればクリーンアップして健全な会話文脈を維持
     const cleanedExistingMessages = activeSession.messages.filter(
-      (m, idx) => !(idx === activeSession.messages.length - 1 && m.role === 'assistant' && !m.content.trim() && !m.imageUrl && !m.isImage)
+      (m, idx) => !(idx === activeSession.messages.length - 1 && m.role === 'assistant' && (!m.content.trim() || m.content.startsWith('⚠️')) && !m.imageUrl && !m.isImage)
     );
     const newMessages = [...cleanedExistingMessages, userMsg];
 

@@ -113,28 +113,12 @@ class LLMEngine:
                 return False
 
     def offload_to_cpu(self):
-        """Free GPU VRAM for image generation while retaining weights in RAM"""
-        with self.load_lock:
-            if self.model is not None and torch.cuda.is_available():
-                try:
-                    self.model.to("cpu")
-                    torch.cuda.empty_cache()
-                    import gc
-                    gc.collect()
-                    print("[LLMEngine] Offloaded Vision LLM to CPU RAM.")
-                except Exception as e:
-                    print(f"[LLMEngine] Offload warning: {e}")
+        """No-op for 4-bit NF4 quantized models as .to() is unsupported by BitsAndBytes"""
+        pass
 
     def reload_to_gpu(self):
-        """Restore LLM to GPU when chat is invoked"""
-        with self.load_lock:
-            if self.model is not None and torch.cuda.is_available():
-                try:
-                    self.model.to("cuda")
-                    torch.cuda.empty_cache()
-                    print("[LLMEngine] Restored Vision LLM to CUDA GPU.")
-                except Exception as e:
-                    print(f"[LLMEngine] Reload warning: {e}")
+        """No-op for 4-bit NF4 quantized models as they remain persistently mapped"""
+        pass
 
     def stream_generate(
         self,
@@ -187,7 +171,7 @@ class LLMEngine:
 
         streamer = TextIteratorStreamer(
             self.processor.tokenizer,
-            timeout=60.0,
+            timeout=120.0,
             skip_prompt=True,
             skip_special_tokens=True
         )
@@ -203,13 +187,31 @@ class LLMEngine:
             pad_token_id=self.processor.tokenizer.eos_token_id
         )
 
-        thread = threading.Thread(target=self.model.generate, kwargs=generate_kwargs)
+        generation_error: List[Exception] = []
+
+        def _generate_worker():
+            try:
+                self.model.generate(**generate_kwargs)
+            except Exception as e:
+                generation_error.append(e)
+                import traceback
+                print(f"[LLMEngine] Exception in generate worker: {e}", file=sys.stderr)
+                traceback.print_exc()
+                try:
+                    streamer.end()
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_generate_worker)
         thread.start()
 
         for new_text in streamer:
             yield new_text
 
         thread.join()
+
+        if generation_error:
+            raise generation_error[0]
 
 # Global engine singleton
 engine = LLMEngine()

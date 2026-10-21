@@ -133,6 +133,10 @@ async def chat_non_stream(request: ChatRequest):
         else:
             raise HTTPException(status_code=500, detail=f"Model not loaded. Error: {engine.last_error}")
 
+    # Free VRAM: ensure SDXL is offloaded to CPU so Vision LLM has full VRAM headroom
+    if hq_image_engine.is_ready:
+        hq_image_engine.offload_to_cpu()
+
     try:
         messages_dict = [
             {"role": m.role, "content": m.content, "images": m.images or []}
@@ -158,6 +162,10 @@ async def chat_stream(request: ChatRequest):
             raise HTTPException(status_code=503, detail="Vision Model is currently loading into GPU memory. Please wait.")
         else:
             raise HTTPException(status_code=500, detail=f"Model failed to load: {engine.last_error}")
+
+    # Free VRAM: ensure SDXL is offloaded to CPU so Vision LLM has full VRAM headroom
+    if hq_image_engine.is_ready:
+        hq_image_engine.offload_to_cpu()
 
     messages_dict = [
         {"role": m.role, "content": m.content, "images": m.images or []}
