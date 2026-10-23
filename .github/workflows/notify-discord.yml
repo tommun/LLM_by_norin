@@ -1,0 +1,127 @@
+name: Notify Discord on Push
+
+on:
+  push:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send notification to Discord
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          GUILD_ID: "1114557803835699200"
+          CATEGORY_ID: "1313044303928360960"
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_URL: ${{ github.event.repository.html_url }}
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          COMMIT_URL: ${{ github.event.head_commit.url }}
+          ADDED_FILES: ${{ toJson(github.event.head_commit.added) }}
+          MODIFIED_FILES: ${{ toJson(github.event.head_commit.modified) }}
+          REMOVED_FILES: ${{ toJson(github.event.head_commit.removed) }}
+        run: |
+          node - << 'EOF'
+          const TOKEN = process.env.DISCORD_BOT_TOKEN;
+          const GUILD_ID = process.env.GUILD_ID;
+          const CATEGORY_ID = process.env.CATEGORY_ID;
+          const REPO_NAME = process.env.REPO_NAME;
+          const REPO_URL = process.env.REPO_URL;
+          const BRANCH = process.env.BRANCH;
+          const ACTOR = process.env.ACTOR;
+          const COMMIT_MSG = process.env.COMMIT_MSG || '(No commit message)';
+          const COMMIT_URL = process.env.COMMIT_URL || REPO_URL;
+
+          const channelName = REPO_NAME
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]/g, '-')
+            .replace(/-+/g, '-')
+            .slice(0, 100);
+
+          async function discordApi(endpoint, options = {}) {
+            const res = await fetch(`https://discord.com/api/v10${endpoint}`, {
+              ...options,
+              headers: {
+                Authorization: `Bot ${TOKEN}`,
+                'Content-Type': 'application/json',
+                ...options.headers,
+              },
+            });
+            if (!res.ok) {
+              const text = await res.text();
+              throw new Error(`Discord API error [${res.status}]: ${text}`);
+            }
+            return res.json();
+          }
+
+          async function main() {
+            // 1. カテゴリ内の全チャンネルを取得
+            const channels = await discordApi(`/guilds/${GUILD_ID}/channels`);
+            let target = channels.find(
+              c => c.parent_id === CATEGORY_ID && c.name === channelName
+            );
+
+            // 2. なければ新規テキストチャンネルを作成
+            if (!target) {
+              console.log(`Creating channel #${channelName} under category ${CATEGORY_ID}...`);
+              target = await discordApi(`/guilds/${GUILD_ID}/channels`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  name: channelName,
+                  type: 0,
+                  parent_id: CATEGORY_ID,
+                  topic: `GitHub Repository: ${REPO_URL}`,
+                }),
+              });
+            }
+
+            // 3. 変更ファイルの要約
+            let added = [];
+            let modified = [];
+            let removed = [];
+            try { added = JSON.parse(process.env.ADDED_FILES || '[]'); } catch (_) {}
+            try { modified = JSON.parse(process.env.MODIFIED_FILES || '[]'); } catch (_) {}
+            try { removed = JSON.parse(process.env.REMOVED_FILES || '[]'); } catch (_) {}
+
+            const allChanged = [
+              ...added.map(f => `+ ${f}`),
+              ...modified.map(f => `~ ${f}`),
+              ...removed.map(f => `- ${f}`)
+            ];
+
+            let filesText = 'なし';
+            if (allChanged.length > 0) {
+              const preview = allChanged.slice(0, 8).join('\n');
+              const rest = allChanged.length > 8 ? `\n...他 ${allChanged.length - 8} 件` : '';
+              filesText = `\`\`\`diff\n${preview}${rest}\n\`\`\``;
+            }
+
+            // 4. メッセージEmbed送信
+            const embed = {
+              title: `🔨 [${REPO_NAME}] に更新がありました (${BRANCH})`,
+              url: COMMIT_URL,
+              color: 0x5865F2,
+              fields: [
+                { name: '更新者', value: ACTOR, inline: true },
+                { name: 'ブランチ', value: `\`${BRANCH}\``, inline: true },
+                { name: 'コミットメッセージ', value: COMMIT_MSG.slice(0, 1000) },
+                { name: '変更ファイル', value: filesText }
+              ],
+              timestamp: new Date().toISOString(),
+              footer: { text: 'GitHub Actions' }
+            };
+
+            console.log(`Sending notification to #${channelName} (${target.id})...`);
+            await discordApi(`/channels/${target.id}/messages`, {
+              method: 'POST',
+              body: JSON.stringify({ embeds: [embed] }),
+            });
+            console.log('Successfully sent notification!');
+          }
+
+          main().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF
