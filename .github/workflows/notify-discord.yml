@@ -39,20 +39,29 @@ jobs:
             .replace(/-+/g, '-')
             .slice(0, 100);
 
-          async function discordApi(endpoint, options = {}) {
-            const res = await fetch(`https://discord.com/api/v10${endpoint}`, {
-              ...options,
-              headers: {
-                Authorization: `Bot ${TOKEN}`,
-                'Content-Type': 'application/json',
-                ...options.headers,
-              },
-            });
-            if (!res.ok) {
-              const text = await res.text();
-              throw new Error(`Discord API error [${res.status}]: ${text}`);
+          async function discordApi(endpoint, options = {}, retries = 3) {
+            for (let i = 0; i < retries; i++) {
+              const res = await fetch(`https://discord.com/api/v10${endpoint}`, {
+                ...options,
+                headers: {
+                  Authorization: `Bot ${TOKEN}`,
+                  'Content-Type': 'application/json',
+                  ...options.headers,
+                },
+              });
+              if (res.status === 429) {
+                const data = await res.json().catch(() => ({ retry_after: 2 }));
+                const waitMs = ((data.retry_after || 2) * 1000) + 500;
+                console.log(`Rate limited, waiting ${waitMs}ms...`);
+                await new Promise(r => setTimeout(r, waitMs));
+                continue;
+              }
+              if (!res.ok) {
+                const text = await res.text();
+                throw new Error(`Discord API error [${res.status}]: ${text}`);
+              }
+              return res.json();
             }
-            return res.json();
           }
 
           async function main() {
@@ -76,13 +85,13 @@ jobs:
               });
             }
 
-            // 3. 変更ファイルの要約
+            // 3. 変更ファイルの要約 (nullチェック付き)
             let added = [];
             let modified = [];
             let removed = [];
-            try { added = JSON.parse(process.env.ADDED_FILES || '[]'); } catch (_) {}
-            try { modified = JSON.parse(process.env.MODIFIED_FILES || '[]'); } catch (_) {}
-            try { removed = JSON.parse(process.env.REMOVED_FILES || '[]'); } catch (_) {}
+            try { const v = JSON.parse(process.env.ADDED_FILES); if (Array.isArray(v)) added = v; } catch (_) {}
+            try { const v = JSON.parse(process.env.MODIFIED_FILES); if (Array.isArray(v)) modified = v; } catch (_) {}
+            try { const v = JSON.parse(process.env.REMOVED_FILES); if (Array.isArray(v)) removed = v; } catch (_) {}
 
             const allChanged = [
               ...added.map(f => `+ ${f}`),
