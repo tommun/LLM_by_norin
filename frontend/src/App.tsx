@@ -563,7 +563,7 @@ export default function App() {
     const originalPrompt = msg.imageMeta?.final_prompt || msg.imageMeta?.enhanced_prompt || msg.content.replace(/^\[.*?\]\s*/, '').replace(/^プロンプト:\s*/, '');
     const imageUrl = msg.imageUrl;
 
-    const craftsmanBot = bots.find(b => b.id === 'prompt_craftsman') || {
+    const craftsmanBot = bots.find(b => b.id === 'creative_buddy_luka') || bots.find(b => b.id === 'prompt_craftsman') || {
       id: 'prompt_craftsman',
       name: '🎨 Midjourney プロンプト職人',
       description: '画像プロンプト作成・要素追加専門AI',
@@ -1098,7 +1098,7 @@ export default function App() {
       'あなたは画像生成AI（Midjourney v6およびSDXL）専門の最高峰プロンプト職人AIです。\nユーザーからの追加要素や修正指示（例：「布・ブラを取り除く」「マイクロビキニにする」「夕暮れの陰影を強調する」など）を受け取ったら、元のプロンプトと融合し、ユーザーの意図を100%最優先にした最新の英語プロンプトおよび除外プロンプト（Negative Prompt）を出力してください。\n\n【絶対遵守ルール】\n1. 【ユーザー指示の絶対遵守・勝手な衣服の追加禁止】: ユーザーが求めた衣装指定（マイクロビキニ、ストリングビキニ、露出、トップレス、素肌等）や布の除去を、一般的なスポーツウェアや無難な服で勝手に上書き・無効化することは固く禁止します。\n2. 【芸術的ボディライン・陰影の最高峰表現】: フィットネスや美術デッサンにおける人体の美しさ・引き締まった筋肉美・しなやかな曲線を際立たせるため、美術・写真専門語彙（chiaroscuro, dramatic slatted window blind shadows, golden hour rim lighting, silhouette contour, sculpted physique, glistening skin texture, 35mm raw photography）を巧みに駆使してください。\n3. 【中国語は一切禁止】: すべて自然な日本語で回答してください。\n4. 【フォーマット必須】: 回答には必ず ```prompt（英語プロンプト）と ```negative（不要な衣服や破綻を防ぐ除外プロンプト）の両コードブロックを含めてください。'
     ) : systemPrompt);
 
-    const isPromptCraftsman = activeSession.botId === 'prompt_craftsman';
+    const isPromptCraftsman = activeSession.botId === 'prompt_craftsman' || activeSession.botId === 'creative_buddy_luka';
     const payloadMessages: Array<{ role: string; content: string; images?: string[] | null }> = [];
 
     if (effectiveSystemPrompt) {
