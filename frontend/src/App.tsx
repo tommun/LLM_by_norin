@@ -34,7 +34,8 @@ import {
   Square,
   Folder,
   Wand2,
-  Shield
+  Shield,
+  Share2
 } from 'lucide-react';
 import './style.css';
 
@@ -225,6 +226,10 @@ export default function App() {
   });
   const [quickPromptInput, setQuickPromptInput] = useState('');
   const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
+  const [discordWebhookUrl, setDiscordWebhookUrl] = useState('');
+  const [discordAutoSend, setDiscordAutoSend] = useState(false);
+  const [isSendingDiscordId, setIsSendingDiscordId] = useState<string | null>(null);
+  const [discordSentId, setDiscordSentId] = useState<string | null>(null);
   const [botCategoryFilter, setBotCategoryFilter] = useState<string>('all');
 
   // High-Quality Generation States (Prompt Master & Style Master)
@@ -273,6 +278,68 @@ export default function App() {
       console.error('Failed to clear VRAM cache:', e);
     } finally {
       setIsClearingVram(false);
+    }
+  };
+
+  const fetchDiscordConfig = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/discord/config`);
+      if (res.ok) {
+        const data = await res.json();
+        setDiscordWebhookUrl(data.webhook_url || '');
+        setDiscordAutoSend(!!data.auto_send);
+      }
+    } catch {}
+  };
+
+  const saveDiscordConfig = async (url: string, auto: boolean) => {
+    try {
+      await fetch(`${BACKEND_URL}/api/discord/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webhook_url: url, auto_send: auto })
+      });
+    } catch {}
+  };
+
+  const handleSendToDiscord = async (msg: Message) => {
+    if (!msg.imageUrl) return;
+    let urlToUse = discordWebhookUrl.trim();
+    if (!urlToUse) {
+      const inputUrl = prompt('DiscordのウェブフックURLを入力してください:\n（Discordのチャンネル設定 > 連携サービス > ウェブフック を作成してURLをコピー）');
+      if (!inputUrl || !inputUrl.trim()) return;
+      urlToUse = inputUrl.trim();
+      setDiscordWebhookUrl(urlToUse);
+      saveDiscordConfig(urlToUse, discordAutoSend);
+    }
+
+    setIsSendingDiscordId(msg.id);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/discord/send-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_url: msg.imageUrl,
+          prompt: msg.content.replace(/^\[.*?\]\s*/, '').replace(/^プロンプト:\s*/, ''),
+          enhanced_prompt: msg.imageMeta?.enhanced_prompt,
+          seed: msg.imageMeta?.seed,
+          steps: msg.imageMeta?.steps,
+          elapsed_seconds: msg.imageMeta?.elapsed_seconds,
+          webhook_url: urlToUse
+        })
+      });
+
+      if (res.ok) {
+        setDiscordSentId(msg.id);
+        setTimeout(() => setDiscordSentId(null), 3000);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Discord送信失敗: ${err.detail || '送信できませんでした'}`);
+      }
+    } catch (e: any) {
+      alert(`送信エラー: ${e.message}`);
+    } finally {
+      setIsSendingDiscordId(null);
     }
   };
 
@@ -659,6 +726,7 @@ export default function App() {
   useEffect(() => {
     fetchGpuStatus();
     fetchLoras();
+    fetchDiscordConfig();
     const interval = setInterval(fetchGpuStatus, 3000);
     return () => clearInterval(interval);
   }, []);
@@ -856,6 +924,22 @@ export default function App() {
         };
         return { ...s, messages: updated };
       });
+
+      if (discordAutoSend && discordWebhookUrl.trim()) {
+        fetch(`${BACKEND_URL}/api/discord/send-image`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_url: data.image_url,
+            prompt: data.final_prompt || data.prompt || promptText,
+            enhanced_prompt: data.enhanced_prompt,
+            seed: data.seed,
+            steps: data.steps,
+            elapsed_seconds: data.elapsed_seconds,
+            webhook_url: discordWebhookUrl.trim()
+          })
+        }).catch(() => {});
+      }
     } catch (err: any) {
       updateActiveSession(s => {
         const updated = [...s.messages];
@@ -1406,6 +1490,35 @@ export default function App() {
                 </div>
               </>
             )}
+
+            <div className="param-group" style={{ background: 'rgba(88, 101, 242, 0.08)', padding: '10px 12px', borderRadius: 8, border: '1px solid rgba(88, 101, 242, 0.25)', marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', fontWeight: 600, color: '#818cf8', marginBottom: 4 }}>
+                <Share2 size={14} />
+                <span>Discord 連携 (画像送信)</span>
+              </div>
+              <input
+                type="password"
+                placeholder="Discord Webhook URL を入力..."
+                value={discordWebhookUrl}
+                onChange={(e) => {
+                  setDiscordWebhookUrl(e.target.value);
+                  saveDiscordConfig(e.target.value, discordAutoSend);
+                }}
+                className="discord-webhook-input"
+                title="Discordチャンネル設定 > 連携サービス > ウェブフック から作成したURLを貼り付け"
+              />
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.74rem', cursor: 'pointer', color: '#cbd5e1', marginTop: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={discordAutoSend}
+                  onChange={(e) => {
+                    setDiscordAutoSend(e.target.checked);
+                    saveDiscordConfig(discordWebhookUrl, e.target.checked);
+                  }}
+                />
+                <span>画像生成時に Discord へ自動送信</span>
+              </label>
+            </div>
 
             <div className="param-group">
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer', color: '#f59e0b' }}>
@@ -2214,6 +2327,14 @@ export default function App() {
                               title="対話型AIに画像を渡して要素を追加・プロンプト修正"
                             >
                               <Wand2 size={13} color="#f59e0b" /> 対話で要素追加
+                            </button>
+                            <button
+                              className={`image-action-tool-btn discord ${discordSentId === msg.id ? 'sent' : ''}`}
+                              onClick={() => handleSendToDiscord(msg)}
+                              disabled={isSendingDiscordId === msg.id}
+                              title="この画像をDiscordチャンネルに送信"
+                            >
+                              <Share2 size={13} color="#5865F2" /> {isSendingDiscordId === msg.id ? '送信中...' : discordSentId === msg.id ? '送信完了!' : 'Discord送信'}
                             </button>
                             <button
                               className="image-download-btn"

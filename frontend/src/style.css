@@ -2476,3 +2476,40 @@ body {
 
 
 
+
+
+/* Discord Integration Styles */
+.image-action-tool-btn.discord {
+  background: rgba(88, 101, 242, 0.15);
+  border: 1px solid rgba(88, 101, 242, 0.4);
+  color: #8599f7;
+}
+
+.image-action-tool-btn.discord:hover:not(:disabled) {
+  background: rgba(88, 101, 242, 0.3);
+  border-color: #5865f2;
+  color: #ffffff;
+}
+
+.image-action-tool-btn.discord.sent {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: #10b981;
+  color: #34d399;
+}
+
+.discord-webhook-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: #f1f5f9;
+  font-size: 0.75rem;
+  margin-top: 4px;
+  box-sizing: border-box;
+}
+
+.discord-webhook-input:focus {
+  border-color: #5865f2;
+  outline: none;
+}

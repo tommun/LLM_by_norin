@@ -510,6 +510,106 @@ async def generate_bot_avatar(req: GenerateAvatarRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Avatar generation failed: {str(e)}")
 
+
+
+# ========================================================
+# Discord Webhook Image Sharing Endpoints
+# ========================================================
+DISCORD_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "discord_config.json")
+
+def load_discord_config() -> dict:
+    if os.path.exists(DISCORD_CONFIG_FILE):
+        try:
+            with open(DISCORD_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "webhook_url": os.getenv("DISCORD_WEBHOOK_URL", ""),
+        "auto_send": False
+    }
+
+def save_discord_config(cfg: dict):
+    with open(DISCORD_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+class DiscordSendImageRequest(BaseModel):
+    image_url: str
+    prompt: str
+    enhanced_prompt: Optional[str] = None
+    seed: Optional[int] = None
+    steps: Optional[int] = None
+    elapsed_seconds: Optional[float] = None
+    webhook_url: Optional[str] = None
+
+class DiscordConfigUpdateRequest(BaseModel):
+    webhook_url: str
+    auto_send: bool = False
+
+@app.get("/api/discord/config")
+def get_discord_config():
+    return load_discord_config()
+
+@app.post("/api/discord/config")
+def update_discord_config(req: DiscordConfigUpdateRequest):
+    cfg = {"webhook_url": req.webhook_url.strip(), "auto_send": req.auto_send}
+    save_discord_config(cfg)
+    return {"status": "success", "config": cfg}
+
+@app.post("/api/discord/send-image")
+async def send_image_to_discord(req: DiscordSendImageRequest):
+    cfg = load_discord_config()
+    webhook_url = (req.webhook_url or cfg.get("webhook_url", "")).strip()
+    if not webhook_url:
+        raise HTTPException(status_code=400, detail="Discord Webhook URLが設定されていません。設定画面でWebhook URLを入力してください。")
+
+    if not req.image_url.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="無効な画像データ形式です。")
+
+    try:
+        header, b64_data = req.image_url.split(",", 1)
+        image_bytes = base64.b64decode(b64_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"画像のデコードに失敗しました: {e}")
+
+    embed = {
+        "title": "🎨 ローカルGPU画像生成結果",
+        "description": f"**プロンプト**:\n```{req.prompt[:900]}```",
+        "color": 0x9B59B6,
+        "image": {"url": "attachment://generated.png"},
+        "footer": {
+            "text": f"RTX 4070 Ti | Steps: {req.steps or 30} | Seed: {req.seed or 'Auto'} | Time: {req.elapsed_seconds or 0}s"
+        }
+    }
+    if req.enhanced_prompt and req.enhanced_prompt != req.prompt:
+        embed["fields"] = [
+            {"name": "✨ 拡張プロンプト", "value": f"```{req.enhanced_prompt[:900]}```", "inline": False}
+        ]
+
+    import aiohttp
+    payload_json = {
+        "username": "Local GPU Studio",
+        "avatar_url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3a8.png",
+        "embeds": [embed]
+    }
+
+    form = aiohttp.FormData()
+    form.add_field("payload_json", json.dumps(payload_json))
+    form.add_field("files[0]", image_bytes, filename="generated.png", content_type="image/png")
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(webhook_url, data=form) as resp:
+                if resp.status in (200, 204):
+                    return {"status": "success", "message": "Discordに画像を送信しました！"}
+                else:
+                    err_text = await resp.text()
+                    raise HTTPException(status_code=resp.status, detail=f"Discord Webhookエラー: {err_text[:200]}")
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise e
+            raise HTTPException(status_code=500, detail=f"Discord送信失敗: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
