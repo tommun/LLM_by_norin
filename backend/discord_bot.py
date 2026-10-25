@@ -1,3 +1,4 @@
+import sys
 import os
 import io
 import re
@@ -7,6 +8,15 @@ import aiohttp
 import asyncio
 import discord
 from discord.ext import commands
+
+# Ensure Windows console encoding does not crash on emojis
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # Configuration
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
@@ -19,7 +29,6 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Conversation history per channel/user (stores last few turns)
 channel_history = {}
-channel_current_bot = {}
 
 def get_bot_system_prompt(bot_id: str = "creative_buddy_luka") -> str:
     """Load system prompt from backend/bots/*.json"""
@@ -30,8 +39,7 @@ def get_bot_system_prompt(bot_id: str = "creative_buddy_luka") -> str:
                 data = json.load(f)
                 return data.get("system_prompt", "")
         except Exception as e:
-            print(f"Error loading bot {bot_id}: {e}")
-    # Fallback to Luka
+            print(f"Error loading bot {bot_id}: {e}", flush=True)
     return (
         "あなたは画像生成（Midjourney v6 / SDXL）専門の専属クリエイティブ相棒「ルカ」です。\n"
         "【口調】一人称は「ボク」、二人称は「きみ」。フランクで明るく頼もしい相棒口調（「〜だよ！」「任せて！」「〜してみようか！」）で話してください。\n"
@@ -52,7 +60,7 @@ class GenerateImageButtonView(discord.ui.View):
         button.label = "🎨 生成中... (30〜40秒)"
         await interaction.response.edit_message(view=self)
         
-        status_msg = await interaction.followup.send(f"🎨 SDXL 1024×1024 で画像を生成しています... お待ちください！", ephemeral=False)
+        status_msg = await interaction.followup.send("🎨 SDXL 1024×1024 で画像を生成しています... お待ちください！", ephemeral=False)
         
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
             try:
@@ -92,11 +100,12 @@ class GenerateImageButtonView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    print(f"==================================================")
-    print(f"  Discord Bot Logged in as: {bot.user.name} ({bot.user.id})")
-    print(f"  Default Persona: 🎨 専属プロンプト相棒 ルカ")
-    print(f"  Connected to Local Backend: {API_BASE_URL}")
-    print(f"==================================================")
+    print(f"==================================================", flush=True)
+    print(f"  Discord Bot Logged in as: {bot.user.name}#{bot.user.discriminator} (ID: {bot.user.id})", flush=True)
+    print(f"  Joined Guilds (Servers): {[g.name for g in bot.guilds]}", flush=True)
+    print(f"  Default Persona: 🎨 専属プロンプト相棒 ルカ", flush=True)
+    print(f"  Connected to Local Backend: {API_BASE_URL}", flush=True)
+    print(f"==================================================", flush=True)
     await bot.change_presence(activity=discord.Game(name="ルカと会話 | @メンションしてね"))
 
 @bot.command(name="help")
@@ -184,17 +193,38 @@ async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
+    print(f"[Bot] Received message in #{message.channel}: '{message.content}' from {message.author}", flush=True)
+
     # Process commands like !image, !gpu, !help, !clear
     if message.content.startswith("!"):
         await bot.process_commands(message)
         return
 
-    # Check if mentioned or in DM
+    # Check if user mentioned, role mentioned, in DM, or reply to bot
+    is_user_mentioned = bot.user in message.mentions
+    is_role_mentioned = False
+    if message.role_mentions:
+        if message.guild and message.guild.me:
+            is_role_mentioned = any(r in message.guild.me.roles for r in message.role_mentions)
+        if not is_role_mentioned:
+            is_role_mentioned = any("ルカ" in r.name.lower() or "bot" in r.name.lower() for r in message.role_mentions)
+            
+    is_named = (
+        bot.user.name.lower() in message.content.lower()
+        or "ルカ" in message.content
+        or bool(re.search(r"<@&\d+>", message.content))
+    )
     is_dm = isinstance(message.channel, discord.DMChannel)
-    is_mentioned = bot.user in message.mentions
+    is_reply = False
+    if message.reference and message.reference.resolved:
+        if getattr(message.reference.resolved, "author", None) == bot.user:
+            is_reply = True
 
-    if is_mentioned or is_dm:
-        clean_text = message.clean_content.replace(f"@{bot.user.name}", "").strip()
+    if is_user_mentioned or is_role_mentioned or is_named or is_dm or is_reply:
+        print(f"[Bot] Responding to {message.author} in #{message.channel}...", flush=True)
+        # Clean text from user and role mentions
+        clean_text = re.sub(r"<@&?\d+>", "", message.content)
+        clean_text = clean_text.replace(f"@{bot.user.name}", "").replace("@ルカ", "").strip()
         if not clean_text and not message.attachments:
             await message.reply("やあ！きみの専属プロンプト相棒ルカだよ🎨✨\nどんな画像を作りたい？布をなくしたり、光と影の陰影を強くしたり、どんなこだわりでも教えてね！")
             return
@@ -209,7 +239,7 @@ async def on_message(message: discord.Message):
                         data_url = f"data:{attachment.content_type};base64,{b64_str}"
                         attached_images.append(data_url)
                     except Exception as e:
-                        print(f"Error reading image: {e}")
+                        print(f"Error reading image: {e}", flush=True)
 
             # Channel history management
             hist = channel_history.setdefault(message.channel.id, [])
@@ -263,7 +293,6 @@ async def on_message(message: discord.Message):
                     await message.reply(f"⚠️ バックエンド接続エラー: {e}")
 
 if __name__ == "__main__":
-    # Check token from environment or .env file
     if not DISCORD_TOKEN:
         env_file = os.path.join(os.path.dirname(__file__), ".env")
         if os.path.exists(env_file):
@@ -273,20 +302,7 @@ if __name__ == "__main__":
                         DISCORD_TOKEN = line.split("=", 1)[1].strip().strip('"').strip("'")
                         break
 
-    if not DISCORD_TOKEN:
-        print("\n========================================================")
-        print(" [!] DISCORD_BOT_TOKEN が設定されていません。")
-        print("  backend/.env ファイルに DISCORD_BOT_TOKEN=あなたのトークン")
-        print("  と記述するか、下記に入力してください。")
-        print("========================================================\n")
-        try:
-            token_input = input("Discord Bot Tokenを入力してください: ").strip()
-            if token_input:
-                DISCORD_TOKEN = token_input
-        except Exception:
-            pass
-
     if DISCORD_TOKEN:
         bot.run(DISCORD_TOKEN)
     else:
-        print("トークンが設定されていないため終了します。")
+        print("トークンが設定されていないため終了します。", flush=True)
