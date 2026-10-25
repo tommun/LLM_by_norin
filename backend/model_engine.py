@@ -68,6 +68,20 @@ class LLMEngine:
 
             self.is_loading = True
             self.last_error = None
+
+            # Free VRAM: ensure SDXL is completely unloaded before loading Vision LLM
+            try:
+                from high_quality_engine import hq_image_engine
+                if hq_image_engine.is_ready:
+                    hq_image_engine.unload_model()
+            except Exception as ex:
+                print(f"[LLMEngine] Warning unloading SDXL: {ex}")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+
             print(f"[LLMEngine] Loading Vision-Language Model: {self.model_id} (4-bit NF4 quantized) on {self.device}...")
 
             try:
