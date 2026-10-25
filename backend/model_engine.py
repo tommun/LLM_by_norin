@@ -112,13 +112,30 @@ class LLMEngine:
                 print(f"[LLMEngine] Error loading vision model: {e}", file=sys.stderr)
                 return False
 
+    def unload_model(self):
+        """Completely unload Vision LLM from GPU memory to grant 100% VRAM to SDXL"""
+        with self.load_lock:
+            if self.model is not None or self.processor is not None:
+                print("[LLMEngine] Unloading Vision LLM from GPU to free full VRAM...")
+                del self.model
+                del self.processor
+                self.model = None
+                self.processor = None
+                self.is_ready = False
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[LLMEngine] Vision LLM unloaded. GPU VRAM completely freed.")
+
     def offload_to_cpu(self):
-        """No-op for 4-bit NF4 quantized models as .to() is unsupported by BitsAndBytes"""
-        pass
+        """Release GPU VRAM when image generation needs it"""
+        self.unload_model()
 
     def reload_to_gpu(self):
-        """No-op for 4-bit NF4 quantized models as they remain persistently mapped"""
-        pass
+        """Reload Vision LLM to GPU when chat is requested"""
+        if not self.is_ready:
+            self.load_model()
 
     def stream_generate(
         self,
@@ -128,7 +145,10 @@ class LLMEngine:
         top_p: float = 0.9,
     ):
         if not self.is_ready or self.model is None or self.processor is None:
-            raise RuntimeError("Vision Model is not loaded. Please wait for model loading.")
+            print("[LLMEngine] Model not currently in memory. Loading on demand...")
+            success = self.load_model()
+            if not success or self.model is None or self.processor is None:
+                raise RuntimeError(f"Vision Model failed to load: {self.last_error}")
 
         # Transform messages into multimodal format
         formatted_messages = []

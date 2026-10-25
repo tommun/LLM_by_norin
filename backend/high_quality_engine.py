@@ -89,9 +89,7 @@ class HighQualityImageEngine:
 
                 self.is_ready = True
                 self.is_loading = False
-                print(f"[HQEngine] SDXL {self.model_id} successfully loaded and ready for high-fidelity generation!")
-                # Offload to CPU system RAM while idle to free VRAM for LLM
-                self.offload_to_cpu()
+                print(f"[HQEngine] SDXL {self.model_id} successfully loaded in CUDA VRAM for high-speed generation!")
                 return True
             except Exception as e:
                 self.is_ready = False
@@ -211,17 +209,14 @@ class HighQualityImageEngine:
             if style_trigger and style_trigger.lower() not in final_prompt.lower():
                 final_prompt = f"{final_prompt}, in style of {style_trigger}"
 
-        # Dynamic VRAM handover: Offload LLM to CPU RAM so SDXL gets 100% full GPU VRAM (fast inference)
-        if model_engine is not None and hasattr(model_engine, "offload_to_cpu"):
-            model_engine.offload_to_cpu()
+        # Dynamic VRAM handover: Unload Vision LLM so SDXL gets 100% full GPU VRAM (fast inference)
+        if model_engine is not None and hasattr(model_engine, "unload_model"):
+            model_engine.unload_model()
 
         if not self.is_ready:
             success = self.load_model()
             if not success:
                 raise RuntimeError(f"Failed to load High-Quality SDXL model: {self.last_error}")
-            self.reload_to_gpu()
-        else:
-            self.reload_to_gpu()
 
         # Clean CUDA cache
         if torch.cuda.is_available():
@@ -294,29 +289,29 @@ class HighQualityImageEngine:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def offload_to_cpu(self):
-        """Offload SDXL weights to CPU system RAM to free GPU VRAM for LLM"""
+    def unload_model(self):
+        """Unload SDXL from GPU to free full VRAM for Vision LLM"""
         with self.lock:
-            if self.pipe is not None and torch.cuda.is_available():
-                try:
-                    self.pipe.to("cpu")
+            if self.pipe is not None:
+                print("[HQEngine] Unloading SDXL from GPU to free full VRAM...")
+                del self.pipe
+                self.pipe = None
+                self.is_ready = False
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    import gc
-                    gc.collect()
-                    print("[HQEngine] Successfully offloaded SDXL to CPU RAM.")
-                except Exception as e:
-                    print(f"[HQEngine] Offload warning: {e}")
+                print("[HQEngine] SDXL unloaded. GPU VRAM completely freed.")
+
+    def offload_to_cpu(self):
+        """Clean CUDA cache"""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def reload_to_gpu(self):
-        """Bring SDXL back into CUDA VRAM for image generation"""
-        with self.lock:
-            if self.pipe is not None and torch.cuda.is_available():
-                try:
-                    self.pipe.to("cuda")
-                    torch.cuda.empty_cache()
-                    print("[HQEngine] Successfully restored SDXL to CUDA GPU.")
-                except Exception as e:
-                    print(f"[HQEngine] Reload warning: {e}")
+        """Clean CUDA cache"""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 # Global singleton
 hq_image_engine = HighQualityImageEngine()

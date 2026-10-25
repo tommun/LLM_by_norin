@@ -127,15 +127,12 @@ def load_model_endpoint(req: ModelLoadRequest, background_tasks: BackgroundTasks
 
 @app.post("/api/chat")
 async def chat_non_stream(request: ChatRequest):
-    if not engine.is_ready:
-        if engine.is_loading:
-            raise HTTPException(status_code=503, detail="Vision Model is still loading into GPU. Please wait a moment.")
-        else:
-            raise HTTPException(status_code=500, detail=f"Model not loaded. Error: {engine.last_error}")
-
-    # Free VRAM: ensure SDXL is offloaded to CPU so Vision LLM has full VRAM headroom
+    # Free VRAM: ensure SDXL is unloaded so Vision LLM has full VRAM headroom
     if hq_image_engine.is_ready:
-        hq_image_engine.offload_to_cpu()
+        hq_image_engine.unload_model()
+
+    if not engine.is_ready and not engine.is_loading:
+        engine.load_model()
 
     try:
         messages_dict = [
@@ -157,15 +154,12 @@ async def chat_non_stream(request: ChatRequest):
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
-    if not engine.is_ready:
-        if engine.is_loading:
-            raise HTTPException(status_code=503, detail="Vision Model is currently loading into GPU memory. Please wait.")
-        else:
-            raise HTTPException(status_code=500, detail=f"Model failed to load: {engine.last_error}")
-
-    # Free VRAM: ensure SDXL is offloaded to CPU so Vision LLM has full VRAM headroom
+    # Free VRAM: ensure SDXL is unloaded so Vision LLM has full VRAM headroom
     if hq_image_engine.is_ready:
-        hq_image_engine.offload_to_cpu()
+        hq_image_engine.unload_model()
+
+    if not engine.is_ready and not engine.is_loading:
+        engine.load_model()
 
     messages_dict = [
         {"role": m.role, "content": m.content, "images": m.images or []}
