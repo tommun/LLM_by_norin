@@ -7,6 +7,7 @@ import psutil
 import torch
 from transformers import AutoProcessor, TextIteratorStreamer, BitsAndBytesConfig
 from qwen_vl_utils import process_vision_info
+from tagger_engine import tagger
 
 # Try importing Qwen2.5-VL model class, fallback to Qwen2-VL or AutoModel
 try:
@@ -17,7 +18,9 @@ except ImportError:
     except ImportError:
         from transformers import AutoModelForVision2Seq as VisionModelClass
 
-DEFAULT_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
+# Abliterated (Uncensored) or Standard Vision-Language Model
+DEFAULT_MODEL_ID = os.getenv("VISION_MODEL_ID", "Qwen/Qwen2.5-VL-7B-Instruct")
+FALLBACK_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 
 class LLMEngine:
     def __init__(self, model_id: str = DEFAULT_MODEL_ID):
@@ -43,20 +46,15 @@ class LLMEngine:
             "ram_percent": psutil.virtual_memory().percent,
             "model_id": self.model_id,
             "model_loaded": self.is_ready,
-            "is_loading": self.is_loading,
+            "is_loading": self.is_loading
         }
-
         if torch.cuda.is_available():
             try:
-                device_idx = 0
-                props = torch.cuda.get_device_properties(device_idx)
-                allocated = torch.cuda.memory_allocated(device_idx)
-                reserved = torch.cuda.memory_reserved(device_idx)
-                info["device_name"] = props.name
-                info["vram_total_mb"] = round(props.total_memory / (1024 * 1024), 1)
-                info["vram_used_mb"] = round(allocated / (1024 * 1024), 1)
-                info["vram_reserved_mb"] = round(reserved / (1024 * 1024), 1)
-                info["vram_percent"] = round((reserved / props.total_memory) * 100, 1)
+                info["device_name"] = torch.cuda.get_device_name(0)
+                info["vram_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024), 1)
+                info["vram_used_mb"] = round(torch.cuda.memory_allocated(0) / (1024 * 1024), 1)
+                info["vram_reserved_mb"] = round(torch.cuda.memory_reserved(0) / (1024 * 1024), 1)
+                info["vram_percent"] = round((info["vram_used_mb"] / info["vram_total_mb"]) * 100, 1)
             except Exception as e:
                 info["gpu_query_error"] = str(e)
         return info
@@ -84,51 +82,69 @@ class LLMEngine:
 
             print(f"[LLMEngine] Loading Vision-Language Model: {self.model_id} (4-bit NF4 quantized) on {self.device}...")
 
-            try:
-                # Processor loading (Tokenizer + Image Processor)
-                min_pixels = 256 * 28 * 28
-                max_pixels = 512 * 28 * 28
-                self.processor = AutoProcessor.from_pretrained(
-                    self.model_id,
-                    min_pixels=min_pixels,
-                    max_pixels=max_pixels,
-                    trust_remote_code=True
-                )
+            # Attempt loading target model, fallback to FALLBACK_MODEL_ID if target snapshot unavailable
+            candidate_models = [self.model_id]
+            if self.model_id != FALLBACK_MODEL_ID:
+                candidate_models.append(FALLBACK_MODEL_ID)
 
-                if torch.cuda.is_available():
-                    print("[LLMEngine] Applying 4-bit NF4 quantization for 7B model...")
-                    bnb_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_compute_dtype=torch.bfloat16,
-                        bnb_4bit_use_double_quant=True,
+            loaded_successfully = False
+            for cand_id in candidate_models:
+                try:
+                    min_pixels = 256 * 28 * 28
+                    max_pixels = 512 * 28 * 28
+                    self.processor = AutoProcessor.from_pretrained(
+                        cand_id,
+                        min_pixels=min_pixels,
+                        max_pixels=max_pixels,
+                        trust_remote_code=True
                     )
-                    self.model = VisionModelClass.from_pretrained(
-                        self.model_id,
-                        quantization_config=bnb_config,
-                        device_map="auto",
-                        trust_remote_code=True,
-                        low_cpu_mem_usage=True
-                    )
-                else:
-                    self.model = VisionModelClass.from_pretrained(
-                        self.model_id,
-                        torch_dtype=torch.float32,
-                        trust_remote_code=True,
-                        low_cpu_mem_usage=True
-                    ).to("cpu")
 
-                self.model.eval()
-                self.is_ready = True
-                self.is_loading = False
-                print(f"[LLMEngine] High-precision Vision-Language Model {self.model_id} successfully loaded and ready on {self.device}!")
-                return True
-            except Exception as e:
+                    if torch.cuda.is_available():
+                        print(f"[LLMEngine] Applying 4-bit NF4 quantization for {cand_id}...")
+                        bnb_config = BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_quant_type="nf4",
+                            bnb_4bit_compute_dtype=torch.bfloat16,
+                            bnb_4bit_use_double_quant=True,
+                        )
+                        self.model = VisionModelClass.from_pretrained(
+                            cand_id,
+                            quantization_config=bnb_config,
+                            device_map="auto",
+                            trust_remote_code=True,
+                            low_cpu_mem_usage=True
+                        )
+                    else:
+                        self.model = VisionModelClass.from_pretrained(
+                            cand_id,
+                            torch_dtype=torch.float32,
+                            trust_remote_code=True,
+                            low_cpu_mem_usage=True
+                        ).to("cpu")
+
+                    self.model.eval()
+                    self.model_id = cand_id
+                    self.is_ready = True
+                    self.is_loading = False
+                    loaded_successfully = True
+                    print(f"[LLMEngine] Vision Model {self.model_id} successfully loaded and ready on {self.device}!")
+                    break
+                except Exception as e:
+                    print(f"[LLMEngine] Failed loading {cand_id}: {e}", file=sys.stderr)
+                    self.last_error = str(e)
+
+            if not loaded_successfully:
                 self.is_ready = False
                 self.is_loading = False
-                self.last_error = str(e)
-                print(f"[LLMEngine] Error loading vision model: {e}", file=sys.stderr)
                 return False
+
+            # Warm up WD14 Tagger engine
+            try:
+                tagger.load_model()
+            except Exception as te:
+                print(f"[LLMEngine] Tagger pre-load warning: {te}")
+
+            return True
 
     def unload_model(self):
         """Completely unload Vision LLM from GPU memory to grant 100% VRAM to SDXL"""
@@ -145,15 +161,6 @@ class LLMEngine:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 print("[LLMEngine] Vision LLM unloaded. GPU VRAM completely freed.")
-
-    def offload_to_cpu(self):
-        """Release GPU VRAM when image generation needs it"""
-        self.unload_model()
-
-    def reload_to_gpu(self):
-        """Reload Vision LLM to GPU when chat is requested"""
-        if not self.is_ready:
-            self.load_model()
 
     def stream_generate(
         self,
@@ -174,8 +181,9 @@ class LLMEngine:
             role = msg.get("role", "user")
             content_list = []
 
-            # If message contains images
+            # If message contains images, also extract Danbooru tags via WD14 Tagger
             images = msg.get("images", [])
+            extracted_tags_info = []
             for img_url in images:
                 content_list.append({
                     "type": "image",
@@ -183,9 +191,24 @@ class LLMEngine:
                     "min_pixels": 256 * 28 * 28,
                     "max_pixels": 512 * 28 * 28
                 })
+                try:
+                    tag_res = tagger.extract_tags(img_url, general_threshold=0.25)
+                    if tag_res and tag_res.get("tags"):
+                        top_tags = tag_res["tags"][:30]
+                        extracted_tags_info.append(f"WD14 Danbooru Tags (Rating: {tag_res.get('rating')}): {', '.join(top_tags)}")
+                except Exception as te:
+                    print(f"[LLMEngine] Tagger extraction note: {te}", flush=True)
 
             # Text content
             text_str = msg.get("content", "")
+            if extracted_tags_info:
+                tags_formatted = "\n".join(extracted_tags_info)
+                text_str = (
+                    f"{text_str}\n\n"
+                    f"【WD14 Tagger画像解析タグ（Danbooru/Gelbooru形式）】:\n{tags_formatted}\n"
+                    f"※指示: 上記の正確なタグ情報および画像のポーズ・構図・アングルを完璧に反映し、最高峰の英語プロンプトを出力してください。"
+                )
+
             if text_str:
                 content_list.append({"type": "text", "text": text_str})
 
