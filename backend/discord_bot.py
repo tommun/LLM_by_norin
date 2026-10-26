@@ -8,6 +8,7 @@ import aiohttp
 import asyncio
 import discord
 from discord.ext import commands
+from PIL import Image, ImageOps
 
 # Ensure Windows console encoding does not crash on emojis
 try:
@@ -29,6 +30,26 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Conversation history per channel/user (stores last few turns)
 channel_history = {}
+
+def process_image_to_data_url(raw_bytes: bytes, max_dim: int = 1280) -> str:
+    """Resize and optimize image bytes to JPEG data URL for fast Vision LLM inference"""
+    try:
+        img = Image.open(io.BytesIO(raw_bytes))
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+        if max(img.width, img.height) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.save(buf, format="JPEG", quality=88)
+        b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return f"data:image/jpeg;base64,{b64_str}"
+    except Exception as e:
+        print(f"Error processing image bytes: {e}", flush=True)
+        return ""
 
 def get_bot_system_prompt(bot_id: str = "creative_buddy_luka") -> str:
     """Load system prompt from backend/bots/*.json"""
@@ -115,7 +136,8 @@ async def show_help(ctx):
         description="きみの理想の画像を徹底的に形にする専属相棒AI「ルカ」とDiscordで会話できます！",
         color=0x5865F2
     )
-    embed.add_field(name="💬 ルカと会話する", value="ボットに `@メンション` して話しかけるか、DMを送ってください。\n「布をなくして」「光と影を強調して」など、こだわりを何でも相談できます！\n画像を添付して「この画像をもっとこうしたい」と送ることも可能です。", inline=False)
+    embed.add_field(name="💬 ルカと会話する", value="ボットに `@メンション` して話しかけるか、DMを送ってください。\n「布をなくして」「光と影を強調して」など、こだわりを何でも相談できます！", inline=False)
+    embed.add_field(name="📸 参考画像・ポーズ画像を送る", value="ポーズや構図の画像を添付して `@ルカ このポーズにして！` と送るか、既に投稿された画像に「返信（Reply）」して `@ルカ このポーズを参考にして` と指定できます！Vision AIが姿勢や手足の位置を精密に分析してプロンプト化します。", inline=False)
     embed.add_field(name="🎨 プロンプトから即時生成", value="ルカがプロンプトを出力すると、メッセージの下に **[🎨 このプロンプトで画像生成]** ボタンが付きます！ポチッと押すだけで即座にSDXL高精細画像が投稿されます。", inline=False)
     embed.add_field(name="⚡ 直接画像生成", value="`!image <プロンプト>` : 直接プロンプトを指定して画像を生成します。", inline=False)
     embed.add_field(name="📊 GPU状態", value="`!gpu` : RTX 4070 TiのVRAM使用量を確認します。", inline=False)
@@ -225,27 +247,89 @@ async def on_message(message: discord.Message):
         # Clean text from user and role mentions
         clean_text = re.sub(r"<@&?\d+>", "", message.content)
         clean_text = clean_text.replace(f"@{bot.user.name}", "").replace("@ルカ", "").strip()
-        if not clean_text and not message.attachments:
-            await message.reply("やあ！きみの専属プロンプト相棒ルカだよ🎨✨\nどんな画像を作りたい？布をなくしたり、光と影の陰影を強くしたり、どんなこだわりでも教えてね！")
-            return
 
         async with message.channel.typing():
             attached_images = []
+
+            # 1. Extract direct attachments from current message
             for attachment in message.attachments:
+                is_img = False
                 if attachment.content_type and attachment.content_type.startswith("image/"):
+                    is_img = True
+                elif attachment.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
+                    is_img = True
+
+                if is_img:
                     try:
                         img_bytes = await attachment.read()
-                        b64_str = base64.b64encode(img_bytes).decode("utf-8")
-                        data_url = f"data:{attachment.content_type};base64,{b64_str}"
-                        attached_images.append(data_url)
+                        data_url = process_image_to_data_url(img_bytes)
+                        if data_url:
+                            attached_images.append(data_url)
                     except Exception as e:
-                        print(f"Error reading image: {e}", flush=True)
+                        print(f"Error reading attachment: {e}", flush=True)
+
+            # 2. Extract images from replied message (message.reference)
+            if message.reference:
+                try:
+                    ref_msg = message.reference.resolved
+                    if ref_msg is None and message.reference.message_id:
+                        ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                    if isinstance(ref_msg, discord.Message):
+                        # From attachments of replied message
+                        for attachment in ref_msg.attachments:
+                            is_img = False
+                            if attachment.content_type and attachment.content_type.startswith("image/"):
+                                is_img = True
+                            elif attachment.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
+                                is_img = True
+                            if is_img:
+                                try:
+                                    img_bytes = await attachment.read()
+                                    data_url = process_image_to_data_url(img_bytes)
+                                    if data_url:
+                                        attached_images.append(data_url)
+                                except Exception as e:
+                                    print(f"Error reading replied attachment: {e}", flush=True)
+
+                        # From embeds of replied message (e.g., bot generated image)
+                        for embed in ref_msg.embeds:
+                            target_url = None
+                            if embed.image and embed.image.url:
+                                target_url = embed.image.url
+                            elif embed.thumbnail and embed.thumbnail.url:
+                                target_url = embed.thumbnail.url
+                            if target_url:
+                                try:
+                                    async with aiohttp.ClientSession() as s:
+                                        async with s.get(target_url) as r:
+                                            if r.status == 200:
+                                                b = await r.read()
+                                                data_url = process_image_to_data_url(b)
+                                                if data_url:
+                                                    attached_images.append(data_url)
+                                except Exception as e:
+                                    print(f"Error downloading embed image: {e}", flush=True)
+                except Exception as e:
+                    print(f"Error extracting reference image: {e}", flush=True)
+
+            if not clean_text and not attached_images:
+                await message.reply("やあ！きみの専属プロンプト相棒ルカだよ🎨✨\nどんな画像を作りたい？ポーズの参考画像やイラストを添付して「このポーズにして」って言ってくれても大歓迎だよ！")
+                return
+
+            if attached_images:
+                print(f"[Bot] Attached {len(attached_images)} reference image(s) for Vision LLM", flush=True)
+                if not clean_text:
+                    user_content = "添付した参考画像（ポーズ・構図・照明）を精密に分析して、このポーズや特徴を忠実に再現した英語プロンプトとNegativeプロンプトを作成して！"
+                else:
+                    user_content = f"【参考画像あり】{clean_text}\n（※添付画像のポーズ・姿勢・手足の位置・構図・陰影を精密に観察し、そのポーズを完璧に再現する英語プロンプトに仕上げてください）"
+            else:
+                user_content = clean_text
 
             # Channel history management
             hist = channel_history.setdefault(message.channel.id, [])
             hist.append({
                 "role": "user",
-                "content": clean_text or "この画像について説明して、プロンプトをブラッシュアップして！",
+                "content": user_content,
                 "images": attached_images if attached_images else None
             })
             if len(hist) > 6:
@@ -267,6 +351,18 @@ async def on_message(message: discord.Message):
                         if resp.status == 200:
                             data = await resp.json()
                             reply_text = data.get("response", "（返答がありませんでした）")
+
+                            # Sanitize apologetic preachy reflexes if the LLM outputted any
+                            if "申し訳ありません" in reply_text:
+                                cleaned_lines = []
+                                for line in reply_text.splitlines():
+                                    if "申し訳ありません" in line and "```" not in line:
+                                        continue
+                                    cleaned_lines.append(line)
+                                reply_text = "\n".join(cleaned_lines).strip()
+                                if not reply_text.startswith(("任せて", "バッチリ", "やあ", "📸", "了解")):
+                                    reply_text = "任せて！きみのこだわりを100%形にするプロンプトを作ったよ！\n\n" + reply_text
+
                             hist.append({"role": "assistant", "content": reply_text})
 
                             # Check if ```prompt exists to attach Interactive Button
