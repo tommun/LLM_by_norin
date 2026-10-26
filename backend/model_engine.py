@@ -86,8 +86,12 @@ class LLMEngine:
 
             try:
                 # Processor loading (Tokenizer + Image Processor)
+                min_pixels = 256 * 28 * 28
+                max_pixels = 512 * 28 * 28
                 self.processor = AutoProcessor.from_pretrained(
                     self.model_id,
+                    min_pixels=min_pixels,
+                    max_pixels=max_pixels,
                     trust_remote_code=True
                 )
 
@@ -173,7 +177,12 @@ class LLMEngine:
             # If message contains images
             images = msg.get("images", [])
             for img_url in images:
-                content_list.append({"type": "image", "image": img_url})
+                content_list.append({
+                    "type": "image",
+                    "image": img_url,
+                    "min_pixels": 256 * 28 * 28,
+                    "max_pixels": 512 * 28 * 28
+                })
 
             # Text content
             text_str = msg.get("content", "")

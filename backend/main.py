@@ -1,3 +1,5 @@
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 import asyncio
 import base64
 import json

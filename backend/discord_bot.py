@@ -31,7 +31,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # Conversation history per channel/user (stores last few turns)
 channel_history = {}
 
-def process_image_to_data_url(raw_bytes: bytes, max_dim: int = 1280) -> str:
+def process_image_to_data_url(raw_bytes: bytes, max_dim: int = 640) -> str:
     """Resize and optimize image bytes to JPEG data URL for fast Vision LLM inference"""
     try:
         img = Image.open(io.BytesIO(raw_bytes))
@@ -386,7 +386,8 @@ async def on_message(message: discord.Message):
                             err = await resp.text()
                             await message.reply(f"⚠️ 推論エラー ({resp.status}): {err[:150]}")
                 except Exception as e:
-                    await message.reply(f"⚠️ バックエンド接続エラー: {e}")
+                    err_msg = str(e).strip() or type(e).__name__
+                    await message.reply(f"⚠️ バックエンド接続エラー: {err_msg}")
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
