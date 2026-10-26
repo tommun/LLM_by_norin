@@ -71,16 +71,23 @@ def get_bot_system_prompt(bot_id: str = "creative_buddy_luka") -> str:
 # Interactive Button to Generate Image directly from Luka's prompt
 class GenerateImageButtonView(discord.ui.View):
     def __init__(self, prompt: str, negative_prompt: str = ""):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.prompt = prompt
         self.negative_prompt = negative_prompt
 
     @discord.ui.button(label="🎨 このプロンプトで画像生成", style=discord.ButtonStyle.primary, emoji="✨")
     async def generate_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        button.disabled = True
-        button.label = "🎨 生成中... (30〜40秒)"
-        await interaction.response.edit_message(view=self)
-        
+        # 1. Discordの3秒タイムアウトを即座に回避するため保留(defer)をミリ秒で返す
+        await interaction.response.defer(thinking=True)
+
+        # 2. ボタンを無効化
+        try:
+            button.disabled = True
+            button.label = "🎨 生成中... (30〜40秒)"
+            await interaction.message.edit(view=self)
+        except Exception as e:
+            print(f"[Bot] Could not disable button: {e}", flush=True)
+
         status_msg = await interaction.followup.send("🎨 SDXL 1024×1024 で画像を生成しています... お待ちください！", ephemeral=False)
         
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
@@ -109,7 +116,7 @@ class GenerateImageButtonView(discord.ui.View):
                             embed.set_footer(text=f"SDXL 1024x1024 | Steps: {data.get('steps', 30)} | Seed: {data.get('seed')} | Time: {data.get('elapsed_seconds', 0)}s")
                             embed.set_image(url="attachment://generated.png")
                             
-                            await interaction.channel.send(embed=embed, file=file)
+                            await interaction.followup.send(embed=embed, file=file)
                             await status_msg.delete()
                         else:
                             await status_msg.edit(content="⚠️ 画像データのデコードに失敗しました。")
