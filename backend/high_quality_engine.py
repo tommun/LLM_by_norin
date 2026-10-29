@@ -8,7 +8,7 @@ import torch
 from diffusers import StableDiffusionXLPipeline, DPMSolverMultistepScheduler
 from PIL import Image
 
-DEFAULT_HQ_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
+DEFAULT_HQ_MODEL_ID = os.getenv("SDXL_MODEL_ID", "SG161222/RealVisXL_V4.0")
 LORAS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "loras"))
 os.makedirs(LORAS_DIR, exist_ok=True)
 
@@ -22,9 +22,10 @@ HQ_ASPECT_RATIOS = {
 }
 
 DEFAULT_NEGATIVE_PROMPT = (
+    "(deformed iris, deformed pupils, semi-realistic, cgi, 3d, render, sketch, cartoon, drawing, anime:1.4), "
     "ugly, deformed, noisy, blurry, low contrast, distorted anatomy, extra limbs, "
     "bad hands, missing fingers, poorly drawn face, mutated, disfigured, watermark, "
-    "signature, text, low quality, artifacts"
+    "signature, text, low quality, artifacts, child, loli, teen, young, underage, school uniform"
 )
 
 class HighQualityImageEngine:
@@ -64,12 +65,20 @@ class HighQualityImageEngine:
 
                 dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-                self.pipe = StableDiffusionXLPipeline.from_pretrained(
-                    self.model_id,
-                    torch_dtype=dtype,
-                    variant="fp16" if torch.cuda.is_available() else None,
-                    use_safetensors=True
-                )
+                try:
+                    self.pipe = StableDiffusionXLPipeline.from_pretrained(
+                        self.model_id,
+                        torch_dtype=dtype,
+                        variant="fp16" if torch.cuda.is_available() else None,
+                        use_safetensors=True
+                    )
+                except Exception as e:
+                    print(f"[HQEngine] Loading with variant='fp16' failed ({e}), retrying without variant...")
+                    self.pipe = StableDiffusionXLPipeline.from_pretrained(
+                        self.model_id,
+                        torch_dtype=dtype,
+                        use_safetensors=True
+                    )
 
                 # Set DPM++ 2M Karras Scheduler for clean, artful textures
                 self.pipe.scheduler = DPMSolverMultistepScheduler.from_config(
