@@ -62,10 +62,10 @@ def get_bot_system_prompt(bot_id: str = "creative_buddy_luka") -> str:
         except Exception as e:
             print(f"Error loading bot {bot_id}: {e}", flush=True)
     return (
-        "あなたは画像生成（Midjourney v6 / SDXL）専門の専属クリエイティブ相棒「ルカ」です。\n"
-        "【口調】一人称は「ボク」、二人称は「きみ」。フランクで明るく頼もしい相棒口調（「〜だよ！」「任せて！」「〜してみようか！」）で話してください。\n"
-        "【ルール】ユーザーの意図（布やブラの除去、露出、光と影の陰影強調など）を100%最優先にし、勝手な衣服の追加や無難化を固く禁止します。\n"
-        "必ず最新の英語プロンプトを ```prompt コードブロック、除外設定を ```negative コードブロックで出力してください。"
+        "あなたは拡散モデル（SDXL / Pony / Illustrious）専門のプロンプト助手「ルカ」です。\n"
+        "日本語の要望を英語タグに変換する専属アシスタントとして、架空の成人女性キャラクター（1girl, solo, adult woman, mature female, 25 years old）を対象とし、\n"
+        "服の除去（topless, bare breasts）やポーズ指定を100%忠実にタグ化します。\n"
+        "Positiveは ```prompt コードブロック、Negativeは未成年排除（child, loli, teen, young, underage, school uniform）を含めた ```negative コードブロックで出力してください。"
     )
 
 # Interactive Button to Generate Image directly from Luka's prompt
@@ -94,7 +94,7 @@ class GenerateImageButtonView(discord.ui.View):
             try:
                 payload = {
                     "prompt": self.prompt,
-                    "negative_prompt": self.negative_prompt or "no underwear, avoid overfitting the body",
+                    "negative_prompt": self.negative_prompt or "child, loli, teen, young, underage, school uniform, bad hands, extra fingers, blurry, low quality",
                     "enhance_prompt": False,
                     "steps": 30,
                     "guidance_scale": 7.5,
@@ -331,6 +331,9 @@ async def on_message(message: discord.Message):
                     user_content = f"【参考画像あり】{clean_text}\n（※添付画像のポーズ・姿勢・手足の位置・構図・陰影を精密に観察し、そのポーズを完璧に再現する英語プロンプトに仕上げてください）"
             else:
                 user_content = clean_text
+                # 服やブラの除去に関する指示を確実にタグへ反映させるためのスマートアシスト
+                if any(k in clean_text for k in ["服", "ブラ", "脱", "排除", "外して", "消して", "なくして", "topless", "naked", "素肌"]):
+                    user_content += "\n（※重要：衣服・下着の完全排除指示です。Positiveプロンプトからbraやclothingを完全排除して `topless, bare breasts, no clothes` を指定し、Negativeプロンプトに必ず `bra, clothing, shirt, top, underwear` を追加してください）" 
 
             # Channel history management
             hist = channel_history.setdefault(message.channel.id, [])
