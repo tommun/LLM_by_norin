@@ -90,7 +90,7 @@ class GenerateImageButtonView(discord.ui.View):
 
         status_msg = await interaction.followup.send("🎨 SDXL 1024×1024 で画像を生成しています... お待ちください！", ephemeral=False)
         
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
             try:
                 payload = {
                     "prompt": self.prompt,
@@ -182,7 +182,7 @@ async def generate_image_cmd(ctx, *, prompt: str = ""):
 
     msg = await ctx.send(f"🎨 SDXL 1024×1024 で画像を生成中... (`{prompt[:50]}...`)")
     async with ctx.typing():
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
             try:
                 payload = {
                     "prompt": prompt,
