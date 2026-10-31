@@ -275,8 +275,12 @@ async def on_message(message: discord.Message):
 
     print(f"[Bot] Received message in #{message.channel}: '{message.content}' from {message.author}", flush=True)
 
-    # Process commands like !image, !gpu, !help, !clear
-    if message.content.startswith("!"):
+    # Process commands like !image, !gpu, !help, !clear (even if mentioned like @ルカ !image)
+    raw_content = message.content.strip()
+    # Remove mentions to check if command exists
+    stripped_for_cmd = re.sub(r"<@&?\d+>", "", raw_content).strip()
+    if stripped_for_cmd.startswith("!"):
+        message.content = stripped_for_cmd
         await bot.process_commands(message)
         return
 
