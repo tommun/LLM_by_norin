@@ -143,10 +143,13 @@ class GenerateImageButtonView(discord.ui.View):
         
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
             try:
+                global current_selected_lora
                 payload = {
                     "prompt": self.prompt,
                     "negative_prompt": self.negative_prompt or "child, loli, teen, young, underage, school uniform, bad hands, extra fingers, blurry, low quality",
                     "enhance_prompt": False,
+                    "lora_name": current_selected_lora,
+                    "lora_scale": 0.8,
                     "steps": 30,
                     "guidance_scale": 7.5,
                     "aspect_ratio": "1:1"
@@ -235,9 +238,12 @@ async def generate_image_cmd(ctx, *, prompt: str = ""):
     async with ctx.typing():
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
             try:
+                global current_selected_lora
                 payload = {
                     "prompt": prompt,
                     "enhance_prompt": False,
+                    "lora_name": current_selected_lora,
+                    "lora_scale": 0.8,
                     "steps": 30,
                     "guidance_scale": 7.5,
                     "aspect_ratio": "1:1"
@@ -267,6 +273,187 @@ async def generate_image_cmd(ctx, *, prompt: str = ""):
                         await msg.edit(content=f"⚠️ 生成エラー: {err[:200]}")
             except Exception as e:
                 await msg.edit(content=f"⚠️ 通信エラー: {e}")
+
+
+# ---------------------------------------------------------------------------
+# LoRA & Style Training Commands for Discord
+# ---------------------------------------------------------------------------
+
+current_selected_lora = None
+
+@bot.command(name="loras")
+async def list_loras_cmd(ctx):
+    """List available LoRA models in backend/loras"""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{API_BASE_URL}/api/hq/loras") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    loras = data.get("loras", [])
+                    global current_selected_lora
+                    active_name = current_selected_lora or "なし (標準)"
+                    desc = f"**現在の適用LoRA**: `{active_name}`\n\n" \
+                           f"• LoRAを適用: `!lora <ファイル名>`\n" \
+                           f"• 解除: `!lora reset`\n" \
+                           f"• 新規画風学習: `!train <スタイル名>` (画像3枚以上添付)"
+                    embed = discord.Embed(
+                        title="🎨 利用可能な画風・キャラ LoRA 一覧",
+                        description=desc,
+                        color=0x9B59B6
+                    )
+                    if loras:
+                        lora_list_text = "\n".join([f"• `{l}`" for l in loras])
+                        embed.add_field(name="インストール済みLoRA", value=lora_list_text, inline=False)
+                    else:
+                        embed.add_field(
+                            name="インストール済みLoRA",
+                            value="まだLoRAがありません。画像を3枚以上添付して `!train <スタイル名>` で自作するか、Civitai等の `.safetensors` ファイルを `backend/loras` に配置してください。",
+                            inline=False
+                        )
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("⚠️ LoRA一覧の取得に失敗しました。")
+        except Exception as e:
+            await ctx.send(f"⚠️ バックエンド接続エラー: {e}")
+
+@bot.command(name="lora")
+async def select_lora_cmd(ctx, *, lora_name: str = ""):
+    """Select or reset active LoRA for generation"""
+    global current_selected_lora
+    lora_name = lora_name.strip()
+    if not lora_name or lora_name.lower() in ("reset", "none", "off", "クリア", "解除"):
+        current_selected_lora = None
+        await ctx.send("🧹 LoRAの適用を解除しました（標準モデルで生成します）。")
+        return
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{API_BASE_URL}/api/hq/loras") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    loras = data.get("loras", [])
+                    matched = None
+                    for l in loras:
+                        if lora_name.lower() == l.lower() or lora_name.lower() == os.path.splitext(l)[0].lower():
+                            matched = l
+                            break
+                    if not matched:
+                        for l in loras:
+                            if lora_name.lower() in l.lower():
+                                matched = l
+                                break
+
+                    if matched:
+                        current_selected_lora = matched
+                        await ctx.send(f"✅ 画風LoRA **`{matched}`** を有効化しました！\n今後の画像生成にこの画風が自動合成されます。")
+                    else:
+                        await ctx.send(f"⚠️ `{lora_name}` に一致するLoRAが見つかりませんでした。\n`!loras` で一覧を確認してください。")
+        except Exception as e:
+            await ctx.send(f"⚠️ エラー: {e}")
+
+@bot.command(name="train")
+async def train_lora_cmd(ctx, style_name: str = ""):
+    """Train a custom art style LoRA directly from Discord attachments"""
+    style_name = "".join(c for c in style_name if c.isalnum() or c in ("_", "-")).strip()
+    if not style_name:
+        await ctx.send("⚠️ スタイル名を英数字で指定してください！\n例: `!train my_style` (学習したい画像を一緒に添付してください)")
+        return
+
+    attachments = [a for a in ctx.message.attachments if a.content_type and a.content_type.startswith("image/")]
+    if not attachments and ctx.message.reference:
+        try:
+            ref_msg = ctx.message.reference.resolved
+            if ref_msg is None and ctx.message.reference.message_id:
+                ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+            if isinstance(ref_msg, discord.Message):
+                attachments = [a for a in ref_msg.attachments if a.content_type and a.content_type.startswith("image/")]
+        except Exception:
+            pass
+
+    if len(attachments) < 3:
+        await ctx.send(f"⚠️ 画風を学習するには **最低3枚以上（推奨5〜15枚）** の画像を同時に添付してください！（現在: {len(attachments)}枚）")
+        return
+
+    status_msg = await ctx.send(f"📥 {len(attachments)} 枚の画像をダウンロードして前処理中... (スタイル名: `{style_name}`)")
+
+    image_data_urls = []
+    for att in attachments:
+        try:
+            b = await att.read()
+            data_url = process_image_to_data_url(b, max_dim=768)
+            if data_url:
+                image_data_urls.append(data_url)
+        except Exception as e:
+            print(f"[Train] Error downloading {att.filename}: {e}")
+
+    if not image_data_urls:
+        await status_msg.edit(content="⚠️ 有効な画像が取得できませんでした。")
+        return
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
+        try:
+            upload_payload = {
+                "style_name": style_name,
+                "images": image_data_urls
+            }
+            async with session.post(f"{API_BASE_URL}/api/train/dataset/upload", json=upload_payload) as resp:
+                if resp.status != 200:
+                    err = await resp.text()
+                    await status_msg.edit(content=f"⚠️ データセットアップロード失敗: {err}")
+                    return
+
+            train_payload = {
+                "style_name": style_name,
+                "total_steps": 250,
+                "auto_caption": True
+            }
+            async with session.post(f"{API_BASE_URL}/api/train/start", json=train_payload) as resp:
+                if resp.status != 200:
+                    err = await resp.text()
+                    await status_msg.edit(content=f"⚠️ 学習開始失敗: {err}")
+                    return
+
+            msg_text = f"🚀 **LoRA画風学習を開始しました！**\n" \
+                       f"• スタイル名: `{style_name}`\n" \
+                       f"• 学習枚数: {len(image_data_urls)} 枚\n" \
+                       f"• ステップ数: 250 steps (所要時間 約2〜3分)\n\n" \
+                       f"`!train_status` で進捗を確認できます！完了すると自動的に `!lora {style_name}` で呼び出せるようになります。"
+            await status_msg.edit(content=msg_text)
+        except Exception as e:
+            await status_msg.edit(content=f"⚠️ 通信エラー: {e}")
+
+@bot.command(name="train_status")
+async def train_status_cmd(ctx):
+    """Check current LoRA training progress"""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{API_BASE_URL}/api/train/status") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    is_training = data.get("is_training", False)
+                    if is_training:
+                        embed = discord.Embed(
+                            title="⚡ LoRA 画風学習中...",
+                            color=0xF39C12
+                        )
+                        embed.add_field(name="スタイル名", value=data.get("style_name", "N/A"), inline=True)
+                        embed.add_field(name="進捗", value=f"{data.get('progress_percent', 0)}% (Step {data.get('current_step', 0)} / {data.get('total_steps', 0)})", inline=True)
+                        embed.add_field(name="Loss", value=f"{data.get('current_loss', 0):.4f}", inline=True)
+                        embed.add_field(name="残り予測時間", value=f"約 {data.get('estimated_remaining_seconds', 0):.0f} 秒", inline=True)
+                        embed.add_field(name="状態", value=data.get("status_message", "学習実行中"), inline=False)
+                        await ctx.send(embed=embed)
+                    else:
+                        msg = data.get("status_message", "待機中 (現在実行中の学習はありません)")
+                        saved = data.get("saved_lora_path")
+                        desc = f"**状態**: {msg}"
+                        if saved:
+                            desc += f"\n**直前の完成LoRA**: `{os.path.basename(saved)}`"
+                        embed = discord.Embed(title="💤 LoRA 学習ステータス", description=desc, color=0x3498DB)
+                        await ctx.send(embed=embed)
+                else:
+                    await ctx.send("⚠️ ステータス取得に失敗しました。")
+        except Exception as e:
+            await ctx.send(f"⚠️ バックエンド接続エラー: {e}")
 
 @bot.event
 async def on_message(message: discord.Message):
