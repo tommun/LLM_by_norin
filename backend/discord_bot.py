@@ -591,7 +591,7 @@ async def on_message(message: discord.Message):
             system_prompt = get_bot_system_prompt("creative_buddy_luka")
             payload_messages = [{"role": "system", "content": system_prompt}] + hist
 
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
                 try:
                     req_payload = {
                         "messages": payload_messages,
