@@ -8,7 +8,7 @@ import torch
 from diffusers import StableDiffusionXLPipeline, DPMSolverMultistepScheduler
 from PIL import Image
 
-DEFAULT_HQ_MODEL_ID = os.getenv("SDXL_MODEL_ID", "SG161222/RealVisXL_V4.0")
+DEFAULT_HQ_MODEL_ID = os.getenv("SDXL_MODEL_ID", "stabilityai/stable-diffusion-xl-base-1.0")
 LORAS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "loras"))
 os.makedirs(LORAS_DIR, exist_ok=True)
 
@@ -22,10 +22,9 @@ HQ_ASPECT_RATIOS = {
 }
 
 DEFAULT_NEGATIVE_PROMPT = (
-    "(deformed iris, deformed pupils, semi-realistic, cgi, 3d, render, sketch, cartoon, drawing, anime:1.4), "
     "ugly, deformed, noisy, blurry, low contrast, distorted anatomy, extra limbs, "
     "bad hands, missing fingers, poorly drawn face, mutated, disfigured, watermark, "
-    "signature, text, low quality, artifacts, child, loli, teen, young, underage, school uniform"
+    "signature, text, low quality, artifacts"
 )
 
 class HighQualityImageEngine:

@@ -69,6 +69,57 @@ def get_bot_system_prompt(bot_id: str = "creative_buddy_luka") -> str:
     )
 
 # Interactive Button to Generate Image directly from Luka's prompt
+def extract_prompt_robust(text: str) -> str:
+    """Robustly extract positive prompt even if LLM omitted markdown backticks"""
+    m = re.search(r"```prompt\s*([\s\S]*?)```", text, re.IGNORECASE)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+
+    for block in re.findall(r"```(?:prompt)?\s*([\s\S]*?)```", text, re.IGNORECASE):
+        cleaned = block.strip()
+        if cleaned and not cleaned.lower().startswith("negative"):
+            return cleaned
+
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        line_s = line.strip()
+        if line_s.startswith("1girl") or "adult woman" in line_s or (line_s.lower() == "prompt" and i + 1 < len(lines)):
+            start_idx = i + 1 if line_s.lower() == "prompt" else i
+            res_lines = []
+            for j in range(start_idx, len(lines)):
+                l = lines[j].strip()
+                if not l:
+                    continue
+                if l.startswith(("(", "（", "Negative", "```")):
+                    break
+                res_lines.append(l)
+            if res_lines:
+                return " ".join(res_lines)
+    return ""
+
+def extract_negative_robust(text: str) -> str:
+    """Robustly extract negative prompt even if LLM omitted markdown backticks"""
+    m = re.search(r"```negative\s*([\s\S]*?)```", text, re.IGNORECASE)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        line_s = line.strip().lower()
+        if line_s.startswith("bra,") or "sports bra" in line_s or (("negative" in line_s or "除外" in line_s) and i + 1 < len(lines)):
+            start_idx = i if line_s.startswith("bra,") or "sports bra" in line_s else i + 1
+            res_lines = []
+            for j in range(start_idx, len(lines)):
+                l = lines[j].strip()
+                if not l:
+                    continue
+                if l.startswith(("(", "（", "```")):
+                    break
+                res_lines.append(l)
+            if res_lines:
+                return " ".join(res_lines)
+    return ""
+
 class GenerateImageButtonView(discord.ui.View):
     def __init__(self, prompt: str, negative_prompt: str = ""):
         super().__init__(timeout=None)
@@ -375,14 +426,12 @@ async def on_message(message: discord.Message):
 
                             hist.append({"role": "assistant", "content": reply_text})
 
-                            # Check if ```prompt exists to attach Interactive Button
-                            prompt_match = re.search(r"```prompt\s*([\s\S]*?)```", reply_text, re.IGNORECASE)
-                            neg_match = re.search(r"```negative\s*([\s\S]*?)```", reply_text, re.IGNORECASE)
+                            # Check and robustly extract prompt to attach Interactive Button
+                            extracted_prompt = extract_prompt_robust(reply_text)
+                            extracted_neg = extract_negative_robust(reply_text)
                             
                             view = None
-                            if prompt_match:
-                                extracted_prompt = prompt_match.group(1).strip()
-                                extracted_neg = neg_match.group(1).strip() if neg_match else ""
+                            if extracted_prompt:
                                 view = GenerateImageButtonView(extracted_prompt, extracted_neg)
 
                             if len(reply_text) <= 2000:
