@@ -1,5 +1,7 @@
 import os
 import sys
+import time
+import json
 import subprocess
 import tempfile
 from typing import List, Dict, Any, Optional
@@ -69,6 +71,23 @@ def concatenate_video_clips(
 
         file_size = os.path.getsize(output_filepath)
         print(f"[VideoPostprocess] Successfully concatenated {len(resolved_paths)} clips into {output_filepath} ({file_size} bytes)")
+
+        # Save metadata JSON for gallery synchronization
+        json_filename = os.path.splitext(output_filename)[0] + ".json"
+        json_filepath = os.path.join(OUTPUTS_DIR, json_filename)
+        metadata = {
+            "status": "success",
+            "is_video": True,
+            "is_episode": True,
+            "filename": output_filename,
+            "video_url": f"/outputs/{output_filename}",
+            "clips_count": len(resolved_paths),
+            "size_bytes": file_size,
+            "clips": [os.path.basename(p) for p in resolved_paths],
+            "created_at": time.time()
+        }
+        with open(json_filepath, "w", encoding="utf-8") as jf:
+            json.dump(metadata, jf, indent=2, ensure_ascii=False)
 
         return {
             "status": "success",
