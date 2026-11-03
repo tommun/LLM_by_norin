@@ -14,6 +14,7 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from model_engine import engine, DEFAULT_MODEL_ID
@@ -28,6 +29,126 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="Local GPU Vision-LLM & Image Studio API", lifespan=lifespan)
+
+
+# ========================================================
+# Output & Gallery Static Files and Auto-Saving
+# ========================================================
+OUTPUTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "outputs"))
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
+
+def save_generated_image_to_outputs(img_data_url: str, metadata: dict) -> str:
+    """Save generated image base64 data and metadata json to outputs/ directory"""
+    try:
+        timestamp = int(time.time())
+        seed = metadata.get("seed", 0)
+        filename_base = f"image_{timestamp}_{seed}"
+        img_filename = f"{filename_base}.png"
+        meta_filename = f"{filename_base}.json"
+
+        img_path = os.path.join(OUTPUTS_DIR, img_filename)
+        meta_path = os.path.join(OUTPUTS_DIR, meta_filename)
+
+        if "," in img_data_url:
+            raw_b64 = img_data_url.split(",", 1)[1]
+            raw_bytes = base64.b64decode(raw_b64)
+            with open(img_path, "wb") as f:
+                f.write(raw_bytes)
+
+            meta_data = {
+                "filename": img_filename,
+                "created_at": timestamp,
+                "created_at_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp)),
+                **{k: v for k, v in metadata.items() if k not in ("image_url", "pose_skeleton_url")}
+            }
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta_data, f, ensure_ascii=False, indent=2)
+
+            return f"/outputs/{img_filename}"
+    except Exception as e:
+        print(f"[Gallery] Error saving output image: {e}")
+    return ""
+
+@app.get("/api/gallery")
+def get_gallery_images(limit: int = 200, offset: int = 0):
+    """Retrieve list of all generated images and videos with metadata, sorted by newest first"""
+    try:
+        items = []
+        if os.path.exists(OUTPUTS_DIR):
+            files = os.listdir(OUTPUTS_DIR)
+            media_files = [f for f in files if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".mp4"))]
+            
+            # Sort by file modification time (newest first)
+            media_files.sort(
+                key=lambda f: os.path.getmtime(os.path.join(OUTPUTS_DIR, f)),
+                reverse=True
+            )
+
+            for media_f in media_files[offset:offset + limit]:
+                fp = os.path.join(OUTPUTS_DIR, media_f)
+                stat = os.stat(fp)
+                base_name = os.path.splitext(media_f)[0]
+                meta_file = os.path.join(OUTPUTS_DIR, f"{base_name}.json")
+                is_video = media_f.lower().endswith(".mp4")
+                
+                meta = {}
+                if os.path.exists(meta_file):
+                    try:
+                        with open(meta_file, "r", encoding="utf-8") as mf:
+                            meta = json.load(mf)
+                    except Exception:
+                        pass
+
+                items.append({
+                    "filename": media_f,
+                    "url": f"/outputs/{media_f}",
+                    "is_video": is_video,
+                    "size_bytes": stat.st_size,
+                    "created_at": int(stat.st_mtime),
+                    "created_at_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                    "prompt": meta.get("prompt") or meta.get("final_prompt") or meta.get("original_prompt") or meta.get("motion_prompt") or "",
+                    "motion_prompt": meta.get("motion_prompt", ""),
+                    "negative_prompt": meta.get("negative_prompt", ""),
+                    "seed": meta.get("seed"),
+                    "steps": meta.get("steps"),
+                    "aspect_ratio": meta.get("aspect_ratio"),
+                    "width": meta.get("width"),
+                    "height": meta.get("height"),
+                    "model_id": meta.get("model_id"),
+                    "lora_name": meta.get("lora_name"),
+                    "elapsed_seconds": meta.get("elapsed_seconds"),
+                    "num_frames": meta.get("num_frames"),
+                    "fps": meta.get("fps"),
+                    "duration_seconds": meta.get("duration_seconds"),
+                    "keyframe_url": meta.get("keyframe_url")
+                })
+
+        return {
+            "total_count": len(media_files) if os.path.exists(OUTPUTS_DIR) else 0,
+            "items": items
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch gallery: {str(e)}")
+
+@app.delete("/api/gallery/{filename}")
+def delete_gallery_image(filename: str):
+    """Delete an image and its metadata from outputs"""
+    safe_name = os.path.basename(filename)
+    img_path = os.path.join(OUTPUTS_DIR, safe_name)
+    base_name = os.path.splitext(safe_name)[0]
+    meta_path = os.path.join(OUTPUTS_DIR, f"{base_name}.json")
+
+    if not os.path.exists(img_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    try:
+        os.remove(img_path)
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+        return {"status": "success", "deleted": safe_name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,6 +197,10 @@ class HQGenerateRequest(BaseModel):
     guidance_scale: float = Field(default=7.5, ge=1.0, le=20.0, description="CFG scale")
     aspect_ratio: str = Field(default="1:1", description="1:1, 16:9, 9:16, 4:3, 3:4")
     seed: Optional[int] = Field(default=None, description="Random seed")
+    pose_image: Optional[str] = Field(default=None, description="Reference image or pose skeleton DataURL for OpenPose ControlNet")
+    controlnet_scale: float = Field(default=0.85, ge=0.0, le=2.0, description="ControlNet conditioning scale")
+    init_image: Optional[str] = Field(default=None, description="Initial image DataURL for img2img remake")
+    denoise_strength: float = Field(default=0.60, ge=0.1, le=1.0, description="Denoising strength for img2img (0.55-0.65 locks composition)")
 
 class EnhancePromptRequest(BaseModel):
     prompt: str = Field(..., description="Prompt to enhance into Midjourney-style English prompt")
@@ -152,7 +277,10 @@ async def chat_non_stream(request: ChatRequest):
 
         return {"response": full_response, "model": engine.model_id}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        err_detail = str(e).strip() if str(e).strip() else repr(e)
+        raise HTTPException(status_code=500, detail=err_detail)
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
@@ -180,7 +308,10 @@ async def chat_stream(request: ChatRequest):
                 yield f"data: {data}\n\n"
             yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
         except Exception as e:
-            error_data = json.dumps({"error": str(e), "done": True}, ensure_ascii=False)
+            import traceback
+            traceback.print_exc()
+            err_msg = str(e).strip() if str(e).strip() else repr(e)
+            error_data = json.dumps({"error": err_msg, "done": True}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
 
     return StreamingResponse(
@@ -250,8 +381,16 @@ async def generate_hq_image_endpoint(req: HQGenerateRequest):
             guidance_scale=req.guidance_scale,
             aspect_ratio=req.aspect_ratio,
             seed=req.seed,
+            pose_image=req.pose_image,
+            controlnet_scale=req.controlnet_scale,
+            init_image=req.init_image,
+            denoise_strength=req.denoise_strength,
             model_engine=engine
         )
+        # Automatically save to outputs gallery
+        if result.get("image_url"):
+            saved_url = save_generated_image_to_outputs(result["image_url"], result)
+            result["saved_url"] = saved_url
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"High-quality generation failed: {str(e)}")
@@ -611,6 +750,310 @@ async def send_image_to_discord(req: DiscordSendImageRequest):
             if isinstance(e, HTTPException):
                 raise e
             raise HTTPException(status_code=500, detail=f"Discord送信失敗: {str(e)}")
+
+# ----------------------------------------------------
+# Video Generation & Orchestration APIs (Wan 2.2 TI2V)
+# ----------------------------------------------------
+class VideoGenerateRequest(BaseModel):
+    keyframe_image: str = Field(..., description="Keyframe image DataURL or file path")
+    motion_prompt: str = Field(..., description="Camera work & motion prompt in English natural text")
+    negative_prompt: Optional[str] = Field(default=None)
+    num_frames: int = Field(default=81, ge=16, le=121)
+    fps: int = Field(default=16, ge=8, le=30)
+    steps: int = Field(default=30, ge=15, le=50)
+    guidance_scale: float = Field(default=5.0, ge=1.0, le=10.0)
+    seed: Optional[int] = Field(default=None)
+    width: int = Field(default=832)
+    height: int = Field(default=480)
+
+class VideoJobRequest(BaseModel):
+    user_instruction: str = Field(..., description="Scene description in Japanese (e.g. このキャラが草原を歩く)")
+    reference_image: Optional[str] = Field(default=None, description="Optional character/scene reference image DataURL")
+    character_id: Optional[str] = Field(default=None, description="Character profile ID (e.g. elena_valkyrie)")
+    style_id: Optional[str] = Field(default="3d_render_fantasy", description="Style profile ID")
+    aspect_ratio: str = Field(default="16:9")
+
+class VideoConcatRequest(BaseModel):
+    clip_filenames: List[str] = Field(..., description="List of mp4 clip filenames to concatenate")
+    output_filename: str = Field(..., description="Output concatenated filename (e.g. SlaveArena_Ep01_Full.mp4)")
+
+@app.post("/api/video/generate-direct")
+async def generate_video_direct_endpoint(req: VideoGenerateRequest):
+    """Directly generate video from keyframe image + motion prompt"""
+    try:
+        from video_engine import video_engine
+        result = video_engine.generate(
+            keyframe_image=req.keyframe_image,
+            motion_prompt=req.motion_prompt,
+            negative_prompt=req.negative_prompt,
+            num_frames=req.num_frames,
+            fps=req.fps,
+            num_inference_steps=req.steps,
+            guidance_scale=req.guidance_scale,
+            seed=req.seed,
+            width=req.width,
+            height=req.height
+        )
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Video generation failed: {str(e)}")
+
+def _run_video_pipeline_worker(job_id: str):
+    """
+    Background worker executing the complete 3-stage pipeline:
+    1. VLM: Parse Japanese instruction into (a) Keyframe tags & (b) Motion English prompt
+    2. SDXL: Generate high-resolution keyframe image
+    3. Wan 2.2: Generate ~5s MP4 video clip
+    """
+    from video_job_queue import job_queue
+    job = job_queue.get_job(job_id)
+    if not job:
+        return
+
+    try:
+        # Load character and style profiles if specified
+        char_tags = ""
+        costume_tags = ""
+        neg_char = ""
+        if job.character_id:
+            char_path = os.path.join(os.path.dirname(__file__), "character_profiles", f"{job.character_id}.json")
+            if os.path.exists(char_path):
+                with open(char_path, "r", encoding="utf-8") as cf:
+                    cdata = json.load(cf)
+                    char_tags = cdata.get("dna_tags", "")
+                    costume_tags = cdata.get("default_costume_tags", "")
+                    neg_char = cdata.get("negative_prompt", "")
+
+        style_pos = "3d render, octane render, blender 3d style, smooth 3d shading, stylized 3d animation, unreal engine 5 cinematic, subsurface scattering, dramatic rim lighting, 8k, masterpiece"
+        style_neg = "2d, flat anime, flat color, sketch, line art, realistic photo, noisy texture"
+        if job.style_id:
+            style_path = os.path.join(os.path.dirname(__file__), "style_profiles", f"{job.style_id}.json")
+            if os.path.exists(style_path):
+                with open(style_path, "r", encoding="utf-8") as sf:
+                    sdata = json.load(sf)
+                    style_pos = sdata.get("positive_style_tags", style_pos)
+                    style_neg = sdata.get("negative_style_tags", style_neg)
+
+        # STAGE 1: Qwen2.5-VL Prompt Decomposition
+        job_queue.update_job(job_id, status="generating_prompts", progress=15, status_text="🧠 Qwen2.5-VL でプロンプトを構想中...")
+        
+        prompt_instruction = (
+            f"あなたは3Dレンダー風ファンタジーアニメーションの演出家兼プロンプトエンジニアです。\n"
+            f"ユーザーからの日本語シーン指示『{job.user_instruction}』を解析し、以下の2つの出力を厳密なフォーマットで生成してください。\n\n"
+            f"1. 【KEYFRAME_PROMPT】: キーフレーム静止画用の英語プロンプト。\n"
+            f"   - ルカの形式（Danbooru系フラットなタグ列、カンマ区切り、自然文や重み記号は不可）。\n"
+            f"   - キャラクター属性: {char_tags}, {costume_tags}\n"
+            f"   - スタイル属性: {style_pos}\n"
+            f"   - 構図・ポーズ・背景タグを指示に合わせて追加。\n\n"
+            f"2. 【MOTION_PROMPT】: Wan 2.2 動画生成用のモーションプロンプト。\n"
+            f"   - 英語の自然文1〜2文。\n"
+            f"   - カメラワーク（カメラの移動、パン、ズーム、アングル）と、キャラクターや背景の動作・風の動きのみを明確に記述。\n"
+            f"   - キャラクターの外見タグや画質キーワードは含めないこと。\n\n"
+            f"フォーマット:\n"
+            f"KEYFRAME: (ここにカンマ区切りのタグ列)\n"
+            f"MOTION: (ここにカメラワークと動作の英語自然文)"
+        )
+
+        messages = [
+            {"role": "system", "content": "You are an expert anime director and prompt craftsman."},
+            {"role": "user", "content": prompt_instruction}
+        ]
+        if job.reference_image:
+            messages[-1]["images"] = [job.reference_image]
+
+        from model_engine import engine as vlm_engine
+        tokens = []
+        for token in vlm_engine.stream_generate(messages=messages, max_new_tokens=400, temperature=0.7):
+            tokens.append(token)
+        vlm_resp = "".join(tokens).strip()
+
+        # Parse output
+        keyframe_prompt = ""
+        motion_prompt = ""
+        for line in vlm_resp.splitlines():
+            line_str = line.strip()
+            if line_str.upper().startswith("KEYFRAME:"):
+                keyframe_prompt = line_str.split(":", 1)[1].strip()
+            elif line_str.upper().startswith("MOTION:"):
+                motion_prompt = line_str.split(":", 1)[1].strip()
+
+        if not keyframe_prompt:
+            keyframe_prompt = f"{char_tags}, {costume_tags}, {style_pos}, fantasy warrior, dynamic pose, scenic fantasy background"
+        if not motion_prompt:
+            motion_prompt = "The camera smoothly circles the character as gentle wind sways her hair and garments in the dramatic lighting."
+
+        neg_prompt = f"child, loli, teen, underage, school uniform, {style_neg}, {neg_char}, bad hands, deformed"
+
+        job_queue.update_job(
+            job_id,
+            status="generating_keyframe",
+            progress=40,
+            status_text="🎨 RealVisXL で高精細キーフレーム静止画を生成中...",
+            keyframe_prompt=keyframe_prompt,
+            motion_prompt=motion_prompt
+        )
+
+        # STAGE 2: SDXL Keyframe Generation
+        from high_quality_engine import hq_image_engine
+        keyframe_res = hq_image_engine.generate(
+            prompt=keyframe_prompt,
+            negative_prompt=neg_prompt,
+            enhance_prompt=False,
+            num_inference_steps=25,
+            guidance_scale=7.5,
+            aspect_ratio="16:9",
+            pose_image=job.reference_image if (job.reference_image and "ポーズ" in job.user_instruction) else None
+        )
+        keyframe_url = keyframe_res.get("saved_url") or keyframe_res.get("image_url")
+        job_queue.update_job(
+            job_id,
+            status="generating_video",
+            progress=65,
+            status_text="🎬 Wan 2.2 で5秒クリップ(81F)を生成中... (約1〜2分)",
+            keyframe_url=keyframe_url
+        )
+
+        # STAGE 3: Wan 2.2 Image-to-Video Generation
+        from video_engine import video_engine
+        video_res = video_engine.generate(
+            keyframe_image=keyframe_res["image_url"],
+            motion_prompt=motion_prompt,
+            negative_prompt=neg_prompt,
+            num_frames=81,
+            fps=16,
+            num_inference_steps=30,
+            guidance_scale=5.0,
+            width=832,
+            height=480
+        )
+
+        job_queue.update_job(
+            job_id,
+            status="completed",
+            progress=100,
+            status_text="✨ 5秒アニメーションクリップ完成！",
+            video_url=video_res.get("video_url"),
+            result_data=video_res
+        )
+        print(f"[VideoJobQueue] Job {job_id} successfully completed: {video_res.get('video_url')}")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        err_msg = str(e).strip() or repr(e)
+        job_queue.update_job(
+            job_id,
+            status="failed",
+            status_text=f"⚠️ 生成失敗: {err_msg[:100]}",
+            error_message=err_msg
+        )
+
+@app.post("/api/video/jobs")
+async def create_video_job_endpoint(req: VideoJobRequest, background_tasks: BackgroundTasks):
+    """Enqueue an end-to-end video generation job (Japanese -> Keyframe -> Wan 2.2 MP4)"""
+    from video_job_queue import job_queue
+    job = job_queue.create_job(
+        user_instruction=req.user_instruction,
+        reference_image=req.reference_image,
+        character_id=req.character_id,
+        style_id=req.style_id
+    )
+    background_tasks.add_task(_run_video_pipeline_worker, job.job_id)
+    return {
+        "status": "enqueued",
+        "job_id": job.job_id,
+        "message": "Video generation pipeline started in background"
+    }
+
+@app.get("/api/video/jobs/{job_id}")
+async def get_video_job_status_endpoint(job_id: str):
+    """Poll progress status of an active or completed video generation job"""
+    from video_job_queue import job_queue
+    job = job_queue.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "progress": job.progress,
+        "status_text": job.status_text,
+        "keyframe_prompt": job.keyframe_prompt,
+        "motion_prompt": job.motion_prompt,
+        "keyframe_url": job.keyframe_url,
+        "video_url": job.video_url,
+        "result_data": job.result_data,
+        "error_message": job.error_message,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at
+    }
+
+@app.post("/api/video/concat")
+async def concat_videos_endpoint(req: VideoConcatRequest):
+    """Concatenate multiple video clips into 1 episode MP4 using lossless FFmpeg concat"""
+    try:
+        from video_postprocess import concatenate_video_clips
+        result = concatenate_video_clips(req.clip_filenames, req.output_filename)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Concatenation failed: {str(e)}")
+
+class CharacterCreateRequest(BaseModel):
+    character_id: str = Field(..., description="Unique alphanumeric ID, e.g. elena_valkyrie")
+    name: str = Field(..., description="Display name, e.g. エレナ")
+    dna_tags: str = Field(..., description="Danbooru identity tags, e.g. 1girl, 22 years old, blonde braided hair")
+    default_costume_tags: Optional[str] = Field(default="", description="Default battle costume tags")
+    negative_prompt: Optional[str] = Field(default="child, loli, teen, underage, school uniform, deformed, bad hands, low quality")
+    age_description: Optional[str] = Field(default="22 years old (adult)")
+    description: Optional[str] = Field(default="")
+
+@app.post("/api/characters")
+def save_character_profile(req: CharacterCreateRequest):
+    """Save or update a character DNA profile (Phase 3)"""
+    char_dir = os.path.join(os.path.dirname(__file__), "character_profiles")
+    os.makedirs(char_dir, exist_ok=True)
+    safe_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", req.character_id)
+    fp = os.path.join(char_dir, f"{safe_id}.json")
+    with open(fp, "w", encoding="utf-8") as f:
+        json.dump(req.dict(), f, ensure_ascii=False, indent=2)
+    return {"status": "success", "character_id": safe_id}
+
+@app.get("/api/characters")
+def get_character_profiles():
+    """List available character DNA profiles"""
+    char_dir = os.path.join(os.path.dirname(__file__), "character_profiles")
+    if not os.path.exists(char_dir):
+        return []
+    profiles = []
+    for fn in os.listdir(char_dir):
+        if fn.endswith(".json"):
+            fp = os.path.join(char_dir, fn)
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    profiles.append(data)
+            except Exception:
+                pass
+    return profiles
+
+@app.get("/api/styles/video")
+def get_video_style_profiles():
+    """List available 3D render style profiles"""
+    style_dir = os.path.join(os.path.dirname(__file__), "style_profiles")
+    if not os.path.exists(style_dir):
+        return []
+    profiles = []
+    for fn in os.listdir(style_dir):
+        if fn.endswith(".json"):
+            fp = os.path.join(style_dir, fn)
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    profiles.append(data)
+            except Exception:
+                pass
+    return profiles
 
 if __name__ == "__main__":
     import uvicorn

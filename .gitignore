@@ -59,5 +59,10 @@ Desktop.ini
 .DS_Store
 
 
+# Outputs
+outputs/
+*.mp4
+*.webm
+
 # Discord Config (private webhook)
 backend/discord_config.json

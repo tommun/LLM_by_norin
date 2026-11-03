@@ -1,0 +1,17 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=LLM & Image Studio (Luka AI)
+GenericName=ローカルAI画像生成・LLMスタジオ
+Comment=Linux Mint向け 高性能ローカルVision-LLM・SDXL RealVisXL・LoRA学習デスクトップアプリ
+Exec=bash -c "$(dirname %k)/run_linuxmint.sh"
+Icon=applications-graphics
+Terminal=false
+Categories=Graphics;Utility;AudioVideo;Development;
+StartupNotify=true
+StartupWMClass=llm-image-studio
+Actions=DiscordBot;
+
+[Desktop Action DiscordBot]
+Name=Discord Botも一緒に起動
+Exec=bash -c "cd $(dirname %k)/../backend && source .venv/bin/activate && python3 discord_bot.py"

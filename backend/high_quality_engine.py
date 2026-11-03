@@ -5,12 +5,24 @@ import time
 import threading
 from typing import Optional, Dict, Any, List
 import torch
-from diffusers import StableDiffusionXLPipeline, DPMSolverMultistepScheduler
+from diffusers import (
+    StableDiffusionXLPipeline,
+    StableDiffusionXLControlNetPipeline,
+    StableDiffusionXLImg2ImgPipeline,
+    AutoPipelineForImage2Image,
+    ControlNetModel,
+    DPMSolverMultistepScheduler
+)
 from PIL import Image
+from openpose_engine import pose_extractor
 
-DEFAULT_HQ_MODEL_ID = os.getenv("SDXL_MODEL_ID", "stabilityai/stable-diffusion-xl-base-1.0")
+DEFAULT_HQ_MODEL_ID = os.getenv("SDXL_MODEL_ID", "SG161222/RealVisXL_V4.0")
 LORAS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "loras"))
+MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "models"))
+CONTROLNET_PATH = os.path.join(MODELS_DIR, "OpenPoseXL2.safetensors")
+CONTROLNET_CONFIG = os.path.join(MODELS_DIR, "controlnet_config.json")
 os.makedirs(LORAS_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
 
 # Recommended resolutions for SDXL (divisible by 64 or 8)
 HQ_ASPECT_RATIOS = {
@@ -22,9 +34,10 @@ HQ_ASPECT_RATIOS = {
 }
 
 DEFAULT_NEGATIVE_PROMPT = (
+    "(deformed iris, deformed pupils, semi-realistic, cgi, 3d, render, sketch, cartoon, drawing, anime:1.4), "
     "ugly, deformed, noisy, blurry, low contrast, distorted anatomy, extra limbs, "
     "bad hands, missing fingers, poorly drawn face, mutated, disfigured, watermark, "
-    "signature, text, low quality, artifacts"
+    "signature, text, low quality, artifacts, child, loli, teen, young, underage, school uniform"
 )
 
 class HighQualityImageEngine:
@@ -35,12 +48,37 @@ class HighQualityImageEngine:
     def __init__(self, model_id: str = DEFAULT_HQ_MODEL_ID):
         self.model_id = model_id
         self.pipe: Optional[StableDiffusionXLPipeline] = None
+        self.img2img_pipe: Optional[Any] = None
+        self.controlnet: Optional[ControlNetModel] = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.is_loading = False
         self.is_ready = False
         self.last_error: Optional[str] = None
         self.current_lora: Optional[str] = None
         self.lock = threading.Lock()
+
+    def load_controlnet(self) -> Optional[ControlNetModel]:
+        """Load OpenPoseXL2 ControlNet model (approx 2.5GB in fp16)"""
+        if self.controlnet is not None:
+            return self.controlnet
+        if not os.path.exists(CONTROLNET_PATH):
+            print(f"[HQEngine] ControlNet model not found at {CONTROLNET_PATH}")
+            return None
+        print(f"[HQEngine] Loading OpenPoseXL2 ControlNet from {CONTROLNET_PATH}...")
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        try:
+            self.controlnet = ControlNetModel.from_single_file(
+                CONTROLNET_PATH,
+                config=CONTROLNET_CONFIG if os.path.exists(CONTROLNET_CONFIG) else None,
+                torch_dtype=dtype
+            )
+            if torch.cuda.is_available():
+                self.controlnet = self.controlnet.to("cuda")
+            print("[HQEngine] OpenPoseXL2 ControlNet loaded successfully!")
+            return self.controlnet
+        except Exception as e:
+            print(f"[HQEngine] Failed to load ControlNet: {e}")
+            return None
 
     def get_available_loras(self) -> List[str]:
         if not os.path.exists(LORAS_DIR):
@@ -58,6 +96,13 @@ class HighQualityImageEngine:
             print(f"[HQEngine] Loading SDXL model: {self.model_id} on {self.device}...")
 
             try:
+                # Orchestrator handover
+                try:
+                    from vram_orchestrator import orchestrator
+                    orchestrator.acquire("sdxl")
+                except Exception as oe:
+                    print(f"[HQEngine] Orchestrator notice: {oe}")
+
                 # Clean CUDA cache before loading
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -86,14 +131,31 @@ class HighQualityImageEngine:
                     algorithm_type="dpmsolver++"
                 )
 
-                # Put SDXL directly on CUDA GPU for lightning-fast inference
+                # Enable TensorCore TF32 & CuDNN benchmark for maximum speed on RTX 4070 Ti
                 if torch.cuda.is_available():
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    torch.backends.cudnn.allow_tf32 = True
+                    torch.backends.cudnn.benchmark = True
+
                     self.pipe = self.pipe.to("cuda")
+
+                    # Apply channels_last memory format for 20-30% faster UNet inference on Ada Lovelace
+                    try:
+                        self.pipe.unet.to(memory_format=torch.channels_last)
+                    except Exception:
+                        pass
+
                     if hasattr(self.pipe, "vae") and self.pipe.vae is not None:
                         if hasattr(self.pipe.vae, "enable_tiling"):
                             self.pipe.vae.enable_tiling()
                         if hasattr(self.pipe.vae, "enable_slicing"):
                             self.pipe.vae.enable_slicing()
+
+                    # Pre-cache img2img pipeline with zero memory duplication
+                    try:
+                        self.img2img_pipe = AutoPipelineForImage2Image.from_pipe(self.pipe)
+                    except Exception:
+                        self.img2img_pipe = None
 
                 self.is_ready = True
                 self.is_loading = False
@@ -192,6 +254,10 @@ class HighQualityImageEngine:
         guidance_scale: float = 7.5,
         aspect_ratio: str = "1:1",
         seed: Optional[int] = None,
+        pose_image: Optional[str] = None,
+        controlnet_scale: float = 0.85,
+        init_image: Optional[str] = None,
+        denoise_strength: float = 0.60,
         model_engine=None
     ) -> Dict[str, Any]:
         # Enhance prompt if requested using LLM
@@ -226,9 +292,15 @@ class HighQualityImageEngine:
             if not success:
                 raise RuntimeError(f"Failed to load High-Quality SDXL model: {self.last_error}")
 
-        # Clean CUDA cache
+        # Clean CUDA cache and force garbage collection to keep dedicated VRAM unfragmented
+        import gc
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
 
         # Configure LoRA style transfer
         self.apply_lora(lora_name, lora_scale)
@@ -237,6 +309,31 @@ class HighQualityImageEngine:
         res_config = HQ_ASPECT_RATIOS.get(aspect_ratio, HQ_ASPECT_RATIOS["1:1"])
         width = res_config["width"]
         height = res_config["height"]
+
+        # Decode init_image for img2img remake if provided
+        init_image_pil = None
+        if init_image:
+            try:
+                raw_init_str = init_image
+                if "," in raw_init_str:
+                    raw_init_str = raw_init_str.split(",", 1)[1]
+                init_bytes = base64.b64decode(raw_init_str)
+                raw_pil = Image.open(io.BytesIO(init_bytes)).convert("RGB")
+                
+                # If aspect ratio wasn't explicitly changed from 1:1 default, match original image aspect
+                orig_w, orig_h = raw_pil.size
+                if aspect_ratio == "1:1" and orig_h > orig_w * 1.15:
+                    width, height = 832, 1216  # 9:16 portrait
+                    aspect_ratio = "9:16"
+                elif aspect_ratio == "1:1" and orig_w > orig_h * 1.15:
+                    width, height = 1216, 832  # 16:9 landscape
+                    aspect_ratio = "16:9"
+
+                init_image_pil = raw_pil.resize((width, height), Image.Resampling.LANCZOS)
+                print(f"[HQEngine] Loaded init_image for img2img remake: resized to ({width}x{height}), denoise_strength={denoise_strength}")
+            except Exception as e:
+                print(f"[HQEngine] Warning: Failed to process init_image: {e}. Falling back to txt2img.")
+                init_image_pil = None
 
         # Generator & Seed
         if seed is not None and seed >= 0:
@@ -251,20 +348,99 @@ class HighQualityImageEngine:
         steps = max(15, min(50, int(num_inference_steps)))
         guidance = max(3.0, min(15.0, float(guidance_scale)))
 
-        print(f"[HQEngine] Generating ({width}x{height}, {steps} steps, cfg={guidance}) for: '{final_prompt[:80]}...'")
+        # Process pose image for ControlNet OpenPose if provided
+        control_image = None
+        pose_skeleton_data_url = None
+        if pose_image:
+            try:
+                print("[HQEngine] Processing pose reference image for OpenPose ControlNet...")
+                raw_pose_str = pose_image
+                if "," in raw_pose_str:
+                    raw_pose_str = raw_pose_str.split(",", 1)[1]
+                pose_bytes = base64.b64decode(raw_pose_str)
+                input_pil = Image.open(io.BytesIO(pose_bytes)).convert("RGB")
+                
+                # Extract OpenPose wireframe skeleton
+                skeleton_pil = pose_extractor.extract_pose(input_pil, include_hand_and_face=True)
+                # Resize skeleton to target generation dimensions
+                control_image = skeleton_pil.resize((width, height), Image.Resampling.LANCZOS)
+
+                # Save skeleton DataURL for client feedback
+                skel_buf = io.BytesIO()
+                skeleton_pil.save(skel_buf, format="PNG")
+                pose_skeleton_data_url = f"data:image/png;base64,{base64.b64encode(skel_buf.getvalue()).decode('utf-8')}"
+                print("[HQEngine] Skeleton extracted successfully!")
+            except Exception as e:
+                print(f"[HQEngine] Warning: Failed to extract pose: {e}. Falling back to standard generation.")
+                control_image = None
+
+        is_img2img = init_image_pil is not None
+        print(f"[HQEngine] Generating ({width}x{height}, {steps} steps, cfg={guidance}, img2img={'ON (' + str(denoise_strength) + ')' if is_img2img else 'OFF'}, controlnet={'ON' if control_image else 'OFF'}) for: '{final_prompt[:80]}...'")
         start_time = time.time()
 
         try:
             with torch.inference_mode():
-                result = self.pipe(
-                    prompt=final_prompt,
-                    negative_prompt=neg_prompt,
-                    num_inference_steps=steps,
-                    guidance_scale=guidance,
-                    generator=generator,
-                    width=width,
-                    height=height
-                )
+                if is_img2img:
+                    # Fast Zero-Copy Img2Img Pipeline sharing weights directly on CUDA
+                    if not self.img2img_pipe:
+                        self.img2img_pipe = AutoPipelineForImage2Image.from_pipe(self.pipe)
+
+                    clamped_strength = max(0.1, min(1.0, float(denoise_strength)))
+                    result = self.img2img_pipe(
+                        prompt=final_prompt,
+                        negative_prompt=neg_prompt,
+                        image=init_image_pil,
+                        strength=clamped_strength,
+                        num_inference_steps=steps,
+                        guidance_scale=guidance,
+                        generator=generator
+                    )
+                elif control_image is not None:
+                    cnet = self.load_controlnet()
+                    if cnet is not None:
+                        # Construct ephemeral ControlNet pipeline sharing self.pipe weights
+                        cnet_pipe = StableDiffusionXLControlNetPipeline(
+                            vae=self.pipe.vae,
+                            text_encoder=self.pipe.text_encoder,
+                            text_encoder_2=self.pipe.text_encoder_2,
+                            tokenizer=self.pipe.tokenizer,
+                            tokenizer_2=self.pipe.tokenizer_2,
+                            unet=self.pipe.unet,
+                            scheduler=self.pipe.scheduler,
+                            controlnet=cnet
+                        )
+                        result = cnet_pipe(
+                            prompt=final_prompt,
+                            negative_prompt=neg_prompt,
+                            image=control_image,
+                            controlnet_conditioning_scale=float(controlnet_scale),
+                            num_inference_steps=steps,
+                            guidance_scale=guidance,
+                            generator=generator,
+                            width=width,
+                            height=height
+                        )
+                        del cnet_pipe
+                    else:
+                        result = self.pipe(
+                            prompt=final_prompt,
+                            negative_prompt=neg_prompt,
+                            num_inference_steps=steps,
+                            guidance_scale=guidance,
+                            generator=generator,
+                            width=width,
+                            height=height
+                        )
+                else:
+                    result = self.pipe(
+                        prompt=final_prompt,
+                        negative_prompt=neg_prompt,
+                        num_inference_steps=steps,
+                        guidance_scale=guidance,
+                        generator=generator,
+                        width=width,
+                        height=height
+                    )
 
             elapsed_sec = round(time.time() - start_time, 2)
             image = result.images[0]
@@ -277,12 +453,17 @@ class HighQualityImageEngine:
 
             return {
                 "image_url": data_url,
+                "pose_skeleton_url": pose_skeleton_data_url,
                 "original_prompt": prompt,
                 "final_prompt": final_prompt,
                 "enhanced_prompt": enhanced_prompt_text,
                 "negative_prompt": neg_prompt,
                 "lora_name": lora_name,
                 "lora_scale": lora_scale,
+                "img2img_active": is_img2img,
+                "denoise_strength": denoise_strength if is_img2img else None,
+                "controlnet_active": control_image is not None,
+                "controlnet_scale": controlnet_scale if control_image is not None else None,
                 "seed": seed,
                 "steps": steps,
                 "guidance_scale": guidance,
@@ -298,18 +479,25 @@ class HighQualityImageEngine:
                 torch.cuda.empty_cache()
 
     def unload_model(self):
-        """Unload SDXL from GPU to free full VRAM for Vision LLM"""
+        """Unload SDXL and ControlNet from GPU to free full VRAM for Vision LLM"""
         with self.lock:
+            if self.img2img_pipe is not None:
+                del self.img2img_pipe
+                self.img2img_pipe = None
             if self.pipe is not None:
                 print("[HQEngine] Unloading SDXL from GPU to free full VRAM...")
                 del self.pipe
                 self.pipe = None
-                self.is_ready = False
-                import gc
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                print("[HQEngine] SDXL unloaded. GPU VRAM completely freed.")
+            if self.controlnet is not None:
+                print("[HQEngine] Unloading ControlNet from GPU...")
+                del self.controlnet
+                self.controlnet = None
+            self.is_ready = False
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("[HQEngine] All image generation models unloaded. GPU VRAM completely freed.")
 
     def offload_to_cpu(self):
         """Clean CUDA cache"""

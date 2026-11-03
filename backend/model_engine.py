@@ -67,18 +67,12 @@ class LLMEngine:
             self.is_loading = True
             self.last_error = None
 
-            # Free VRAM: ensure SDXL is completely unloaded before loading Vision LLM
+            # Forcefully unload ALL image/video models and clean VRAM before loading Vision LLM
             try:
-                from high_quality_engine import hq_image_engine
-                if hq_image_engine.is_ready:
-                    hq_image_engine.unload_model()
+                from vram_orchestrator import orchestrator
+                orchestrator.acquire("vlm")
             except Exception as ex:
-                print(f"[LLMEngine] Warning unloading SDXL: {ex}")
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                import gc
-                gc.collect()
+                print(f"[LLMEngine] Orchestrator notice: {ex}")
 
             print(f"[LLMEngine] Loading Vision-Language Model: {self.model_id} (4-bit NF4 quantized) on {self.device}...")
 
@@ -110,7 +104,7 @@ class LLMEngine:
                         self.model = VisionModelClass.from_pretrained(
                             cand_id,
                             quantization_config=bnb_config,
-                            device_map="auto",
+                            device_map={"": 0},
                             trust_remote_code=True,
                             low_cpu_mem_usage=True
                         )
@@ -174,6 +168,16 @@ class LLMEngine:
             success = self.load_model()
             if not success or self.model is None or self.processor is None:
                 raise RuntimeError(f"Vision Model failed to load: {self.last_error}")
+
+        # Safeguard: Keep only the most recent image across all messages to prevent VRAM overflow
+        has_kept_one_image = False
+        for msg in reversed(messages):
+            imgs = msg.get("images", [])
+            if imgs and not has_kept_one_image:
+                msg["images"] = [imgs[-1]]  # Keep latest single image
+                has_kept_one_image = True
+            else:
+                msg["images"] = []
 
         # Transform messages into multimodal format
         formatted_messages = []

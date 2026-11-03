@@ -35,7 +35,11 @@ import {
   Folder,
   Wand2,
   Shield,
-  Share2
+  Share2,
+  Grid,
+  Eye,
+  Search,
+  Clock
 } from 'lucide-react';
 import './style.css';
 
@@ -110,7 +114,7 @@ interface ChatSession {
   title: string;
   createdAt: number;
   messages: Message[];
-  mode: 'chat' | 'image' | 'train' | 'bots' | 'prompt_master' | 'style_master';
+  mode: 'chat' | 'image' | 'train' | 'bots' | 'prompt_master' | 'style_master' | 'gallery';
   aspectRatio: AspectRatio;
   style: string;
   loraName?: string;
@@ -142,6 +146,35 @@ interface GpuStatus {
 const BACKEND_URL = 'http://localhost:8000';
 const SESSIONS_STORAGE_KEY = 'norin_llm_sessions_v2';
 const ACTIVE_SESSION_STORAGE_KEY = 'norin_llm_active_session_id_v2';
+
+
+interface GalleryItem {
+  filename: string;
+  url: string;
+  size_bytes: number;
+  created_at: number;
+  created_at_iso: string;
+  prompt: string;
+  negative_prompt?: string;
+  seed?: number;
+  steps?: number;
+  aspect_ratio?: string;
+  width?: number;
+  height?: number;
+  model_id?: string;
+  lora_name?: string;
+  elapsed_seconds?: number;
+  metadata?: {
+    prompt?: string;
+    negative_prompt?: string;
+    seed?: number;
+    steps?: number;
+    aspect_ratio?: string;
+    width?: number;
+    height?: number;
+    lora_name?: string;
+  };
+}
 
 export default function App() {
   // Load sessions from localStorage or initialize with a default one
@@ -201,6 +234,67 @@ export default function App() {
   const [editingTitle, setEditingTitle] = useState('');
   const [availableLoras, setAvailableLoras] = useState<string[]>([]);
 
+  // Gallery States & Live Auto-Refresh
+  const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
+  const [gallerySearch, setGallerySearch] = useState('');
+  const [isLoadingGallery, setIsLoadingGallery] = useState(false);
+  const [selectedGalleryItem, setSelectedGalleryItem] = useState<GalleryItem | null>(null);
+  const [autoRefreshGallery, setAutoRefreshGallery] = useState(true);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date>(new Date());
+
+  const fetchGallery = async (showLoadingSpinner: boolean = true) => {
+    if (showLoadingSpinner) setIsLoadingGallery(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/gallery?limit=300`);
+      if (res.ok) {
+        const data = await res.json();
+        setGalleryItems(data.items || []);
+        setLastRefreshedAt(new Date());
+      }
+    } catch (err) {
+      console.error('Failed to fetch gallery:', err);
+    } finally {
+      if (showLoadingSpinner) setIsLoadingGallery(false);
+    }
+  };
+
+  // Initial load and periodic auto-refresh (Live Sync every 3 seconds)
+  useEffect(() => {
+    fetchGallery(true);
+  }, []);
+
+  useEffect(() => {
+    if (!autoRefreshGallery) return;
+    const interval = setInterval(() => {
+      fetchGallery(false);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [autoRefreshGallery]);
+
+  const filteredGalleryItems = galleryItems.filter((item) => {
+    if (!gallerySearch.trim()) return true;
+    const q = gallerySearch.toLowerCase();
+    const promptMatch = (item.prompt || item.prompt)?.toLowerCase().includes(q);
+    const filenameMatch = item.filename.toLowerCase().includes(q);
+    return Boolean(promptMatch || filenameMatch);
+  });
+
+  const handleDeleteGalleryItem = async (filename: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!confirm(`画像 "${filename}" を削除してもよろしいですか？`)) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/gallery/${filename}`, { method: 'DELETE' });
+      if (res.ok) {
+        setGalleryItems(prev => prev.filter(item => item.filename !== filename));
+        if (selectedGalleryItem?.filename === filename) {
+          setSelectedGalleryItem(null);
+        }
+      }
+    } catch (err) {
+      alert('削除に失敗しました: ' + err);
+    }
+  };
+
   // Style Training States
   const [trainStyleName, setTrainStyleName] = useState('');
   const [trainSteps, setTrainSteps] = useState(500);
@@ -240,6 +334,9 @@ export default function App() {
   const [hqNegativePrompt, setHqNegativePrompt] = useState('');
   const [enhancedPromptPreview, setEnhancedPromptPreview] = useState<string | null>(null);
   const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
+  const [isRemakeMode, setIsRemakeMode] = useState(false);
+  const [remakeDenoise, setRemakeDenoise] = useState(0.60);
+  const [isPoseMode, setIsPoseMode] = useState(false);
 
   // Derived Bot values
   const currentBot = bots.find(b => b.id === activeSession.botId);
@@ -995,7 +1092,10 @@ export default function App() {
           steps: hqSteps,
           guidance_scale: hqGuidanceScale,
           aspect_ratio: activeSession.aspectRatio,
-          seed: null
+          seed: null,
+          pose_image: isPoseMode && attachments.length > 0 ? attachments[0] : null,
+          init_image: isRemakeMode && attachments.length > 0 ? attachments[0] : null,
+          denoise_strength: remakeDenoise
         })
       });
 
@@ -1603,6 +1703,65 @@ export default function App() {
                 onChange={(e) => setHqNegativePrompt(e.target.value)}
               />
             </div>
+
+            {/* img2img Remake & ControlNet Settings */}
+            <div className="param-group" style={{ marginTop: '12px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '10px' }}>
+              <div className="param-label">
+                <span>🔄 構図固定リメイク (img2img)</span>
+                <input
+                  type="checkbox"
+                  checked={isRemakeMode}
+                  onChange={(e) => {
+                    setIsRemakeMode(e.target.checked);
+                    if (e.target.checked) setIsPoseMode(false);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                />
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginBottom: '4px' }}>
+                画像を添付して実行。手や小道具・デスク配置を固定して実写化
+              </div>
+              {isRemakeMode && (
+                <div style={{ marginTop: '6px' }}>
+                  <div className="param-label" style={{ fontSize: '0.7rem' }}>
+                    <span>Denoise強度 (保持度)</span>
+                    <span className="param-value">{remakeDenoise.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.40"
+                    max="0.80"
+                    step="0.05"
+                    value={remakeDenoise}
+                    onChange={(e) => setRemakeDenoise(parseFloat(e.target.value))}
+                    className="param-slider"
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: '#64748b' }}>
+                    <span>0.50 (元画像強)</span>
+                    <span>0.60 (推奨)</span>
+                    <span>0.70 (質感強)</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="param-group">
+              <div className="param-label">
+                <span>🦴 ポーズ骨格固定 (ControlNet)</span>
+                <input
+                  type="checkbox"
+                  checked={isPoseMode}
+                  onChange={(e) => {
+                    setIsPoseMode(e.target.checked);
+                    if (e.target.checked) setIsRemakeMode(false);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                />
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>
+                参考画像の人物姿勢をOpenPoseで抽出して100%ポーズ固定
+              </div>
+            </div>
           </>
         )}
 
@@ -1709,15 +1868,67 @@ export default function App() {
 
       {/* Main Chat Area */}
       <main className="chat-main">
-        {/* Header */}
+        {/* Top Header & Main Navigation */}
         <header className="chat-header">
-          <div className="chat-title">
-            <Sparkles size={20} color={activeSession.mode === 'chat' ? '#10b981' : '#8b5cf6'} />
-            <span>Vision LLM & Image Studio (RTX 4070 Ti)</span>
+          <div className="chat-title-group">
+            <div className="chat-brand">
+              <Sparkles size={20} color="#8b5cf6" />
+              <span className="brand-name">LLM & Image Studio</span>
+            </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.85rem', color: '#9ca3af' }}>
-            <Activity size={16} color="#3b82f6" />
-            <span>Multimodal Vision + ADD Diffusion</span>
+
+          {/* Clean Main Navigation Tabs */}
+          <nav className="main-nav-bar">
+            <button
+              className={`main-nav-btn ${activeSession.mode === 'chat' ? 'active-chat' : ''}`}
+              onClick={() => updateActiveSession(s => ({ ...s, mode: 'chat' }))}
+            >
+              <Bot size={15} />
+              <span>💬 対話チャット</span>
+            </button>
+            <button
+              className={`main-nav-btn ${activeSession.mode === 'prompt_master' ? 'active-prompt' : ''}`}
+              onClick={() => updateActiveSession(s => ({ ...s, mode: 'prompt_master' }))}
+            >
+              <Sparkles size={15} />
+              <span>🎨 画像生成 (SDXL)</span>
+            </button>
+            <button
+              className={`main-nav-btn ${activeSession.mode === 'gallery' ? 'active-gallery' : ''}`}
+              onClick={() => updateActiveSession(s => ({ ...s, mode: 'gallery' }))}
+            >
+              <Grid size={15} />
+              <span>🖼️ ギャラリー</span>
+              {galleryItems.length > 0 && (
+                <span className="nav-badge">{galleryItems.length}</span>
+              )}
+            </button>
+            <button
+              className={`main-nav-btn ${activeSession.mode === 'bots' ? 'active-bots' : ''}`}
+              onClick={() => updateActiveSession(s => ({ ...s, mode: 'bots' }))}
+            >
+              <User size={15} />
+              <span>🤖 ボット一覧</span>
+            </button>
+            <button
+              className={`main-nav-btn ${activeSession.mode === 'train' ? 'active-train' : ''}`}
+              onClick={() => updateActiveSession(s => ({ ...s, mode: 'train' }))}
+            >
+              <GraduationCap size={15} />
+              <span>🎓 画風学習</span>
+            </button>
+          </nav>
+
+          <div className="header-status-group">
+            {autoRefreshGallery && (
+              <span className="live-sync-indicator" title="新着画像の自動同期中">
+                <span className="pulse-dot green" /> 自動更新中
+              </span>
+            )}
+            <div className="gpu-mini-pill">
+              <Activity size={13} color="#10b981" />
+              <span>RTX 4070 Ti</span>
+            </div>
           </div>
         </header>
 
@@ -2103,6 +2314,139 @@ export default function App() {
                   </div>
                 ))}
               </div>
+            </div>
+          ) : activeSession.mode === 'gallery' ? (
+            <div className="gallery-studio">
+              {/* Gallery Header Toolbar */}
+              <div className="gallery-toolbar">
+                <div className="gallery-title-group">
+                  <div className="gallery-icon-badge">
+                    <Grid size={22} color="#38bdf8" />
+                  </div>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      生成画像ギャラリー
+                      <span className="gallery-counter-badge">
+                        {filteredGalleryItems.length} 枚
+                      </span>
+                    </h2>
+                    <p style={{ margin: '3px 0 0', fontSize: '0.8rem', color: '#94a3b8' }}>
+                      WebおよびDiscordで生成されたすべての画像をリアルタイムで自動同期・管理
+                    </p>
+                  </div>
+                </div>
+
+                <div className="gallery-toolbar-actions">
+                  {/* Search Input */}
+                  <div className="gallery-search-box">
+                    <Search size={14} color="#94a3b8" />
+                    <input
+                      type="text"
+                      placeholder="プロンプトやキーワードで検索..."
+                      value={gallerySearch}
+                      onChange={(e) => setGallerySearch(e.target.value)}
+                    />
+                    {gallerySearch && (
+                      <button className="gallery-search-clear" onClick={() => setGallerySearch('')}>×</button>
+                    )}
+                  </div>
+
+                  {/* Auto Refresh Toggle */}
+                  <button
+                    className={`auto-refresh-toggle-btn ${autoRefreshGallery ? 'active' : ''}`}
+                    onClick={() => setAutoRefreshGallery(!autoRefreshGallery)}
+                    title="新着画像の自動同期 (3秒ごと)"
+                  >
+                    <span className={`sync-dot ${autoRefreshGallery ? 'live' : ''}`} />
+                    <span>{autoRefreshGallery ? '自動更新 ON' : '自動更新 OFF'}</span>
+                  </button>
+
+                  {/* Manual Refresh Button */}
+                  <button
+                    className="gallery-refresh-btn"
+                    onClick={() => fetchGallery(true)}
+                    disabled={isLoadingGallery}
+                    title="手動で更新"
+                  >
+                    <RefreshCw size={13} className={isLoadingGallery ? 'animate-spin' : ''} />
+                    <span>更新</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Gallery Grid */}
+              {filteredGalleryItems.length === 0 ? (
+                <div className="gallery-empty-state">
+                  <Grid size={48} color="#475569" />
+                  <h3>{gallerySearch ? '一致する画像が見つかりませんでした' : '保存された生成画像がまだありません'}</h3>
+                  <p>{gallerySearch ? '別のキーワードでお試しください。' : '画像生成スタジオまたはDiscordで画像を生成すると、ここに自動的に反映されます。'}</p>
+                </div>
+              ) : (
+                <div className="gallery-grid">
+                  {filteredGalleryItems.map((item) => (
+                    <div
+                      key={item.filename}
+                      className="gallery-card"
+                      onClick={() => setSelectedGalleryItem(item)}
+                    >
+                      {item.filename.toLowerCase().endsWith('.mp4') ? (
+                        <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+                          <video
+                            src={`${BACKEND_URL}${item.url}`}
+                            className="gallery-card-img"
+                            autoPlay
+                            loop
+                            muted
+                            playsInline
+                          />
+                          <span style={{ position: 'absolute', top: 6, left: 6, background: 'rgba(0,0,0,0.7)', color: '#00FF88', padding: '2px 6px', borderRadius: 4, fontSize: '0.65rem', fontWeight: 'bold' }}>🎬 VIDEO</span>
+                        </div>
+                      ) : (
+                        <img
+                          src={`${BACKEND_URL}${item.url}`}
+                          alt={(item.prompt || item.prompt) || item.filename}
+                          className="gallery-card-img"
+                          loading="lazy"
+                        />
+                      )}
+                      <div className="gallery-card-overlay">
+                        <div className="gallery-card-prompt">
+                          {(item.prompt || item.prompt) || item.filename}
+                        </div>
+                        <div className="gallery-card-meta">
+                          <span>{item.width && item.height ? `${item.width}×${item.height}` : 'SDXL'}</span>
+                          <span>{new Date(item.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                        <div className="gallery-card-actions" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            className="card-quick-action"
+                            onClick={() => setSelectedGalleryItem(item)}
+                            title="詳細・拡大表示"
+                          >
+                            <Maximize2 size={13} />
+                          </button>
+                          <button
+                            className="card-quick-action"
+                            onClick={() => {
+                              handleSendPromptToGenerator((item.prompt || item.prompt) || '', (item.negative_prompt || item.negative_prompt));
+                            }}
+                            title="このプロンプトで画像生成"
+                          >
+                            <Sparkles size={13} />
+                          </button>
+                          <button
+                            className="card-quick-action delete"
+                            onClick={(e) => handleDeleteGalleryItem(item.filename, e)}
+                            title="削除"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ) : activeSession.messages.length === 0 ? (
             <div className="empty-chat">
@@ -2585,6 +2929,14 @@ export default function App() {
                 <span>⚡ 高速プレビュー</span>
               </button>
               <button
+                className={`mode-tab ${activeSession.mode === 'gallery' ? 'active-gallery' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'gallery' }))}
+                title="今までに作成した画像をすべて閲覧・管理"
+              >
+                <Grid size={14} color="#38bdf8" />
+                <span>🖼️ ギャラリー</span>
+              </button>
+              <button
                 className={`mode-tab ${activeSession.mode === 'bots' ? 'active-bots' : ''}`}
                 onClick={() => updateActiveSession(s => ({ ...s, mode: 'bots' }))}
               >
@@ -2827,7 +3179,7 @@ export default function App() {
             </div>
           )}
 
-          {activeSession.mode === 'bots' ? (
+          {activeSession.mode === 'gallery' ? null : activeSession.mode === 'bots' ? (
             <div className="bot-studio-guide-bar">
               <span>💡 ボットスタジオを閲覧中。お好みのボットのカードから「💬 対話を開始」を押すと、専用のチャットが開始します。</span>
               <button className="guide-create-bot-btn" onClick={startCreateBot}>
@@ -3053,6 +3405,129 @@ export default function App() {
               <button className="bot-save-btn" onClick={handleSaveBot}>
                 <Check size={16} /> 保存する
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Gallery Detail Modal */}
+      {selectedGalleryItem && (
+        <div className="gallery-modal-backdrop" onClick={() => setSelectedGalleryItem(null)}>
+          <div className="gallery-modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="gallery-modal-image-col">
+              {selectedGalleryItem.filename.toLowerCase().endsWith('.mp4') ? (
+                <video
+                  src={`${BACKEND_URL}${selectedGalleryItem.url}`}
+                  className="gallery-modal-img"
+                  controls
+                  autoPlay
+                  loop
+                  playsInline
+                />
+              ) : (
+                <img
+                  src={`${BACKEND_URL}${selectedGalleryItem.url}`}
+                  alt={selectedGalleryItem.filename}
+                  className="gallery-modal-img"
+                />
+              )}
+            </div>
+            <div className="gallery-modal-info-col">
+              <div className="modal-info-header">
+                <h3>🖼️ 生成画像の詳細</h3>
+                <button className="modal-close-btn" onClick={() => setSelectedGalleryItem(null)}>
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="modal-info-body">
+                {/* Positive Prompt */}
+                <div className="info-block">
+                  <div className="info-block-label">
+                    <span>🎨 Positive プロンプト</span>
+                    <button
+                      className="mini-copy-btn"
+                      onClick={() => copyToClipboard('modal-prompt', (selectedGalleryItem.prompt || selectedGalleryItem.prompt) || '')}
+                    >
+                      <Copy size={12} /> コピー
+                    </button>
+                  </div>
+                  <div className="info-prompt-box">
+                    {(selectedGalleryItem.prompt || selectedGalleryItem.prompt) || '(メタデータなし)'}
+                  </div>
+                </div>
+
+                {/* Negative Prompt */}
+                {(selectedGalleryItem.negative_prompt || selectedGalleryItem.negative_prompt) && (
+                  <div className="info-block">
+                    <div className="info-block-label">
+                      <span>🛡️ Negative 除外タグ</span>
+                      <button
+                        className="mini-copy-btn"
+                        onClick={() => copyToClipboard('modal-neg', (selectedGalleryItem.negative_prompt || selectedGalleryItem.negative_prompt) || '')}
+                      >
+                        <Copy size={12} /> コピー
+                      </button>
+                    </div>
+                    <div className="info-prompt-box negative">
+                      {selectedGalleryItem.negative_prompt || ''}
+                    </div>
+                  </div>
+                )}
+
+                {/* Meta Attributes Table */}
+                <div className="meta-grid">
+                  <div className="meta-cell">
+                    <span className="meta-k">サイズ</span>
+                    <span className="meta-v">
+                      {(selectedGalleryItem.width || selectedGalleryItem.width) && (selectedGalleryItem.height || selectedGalleryItem.height)
+                        ? `${selectedGalleryItem.width || 1024} × ${selectedGalleryItem.height || 1024} (${selectedGalleryItem.aspect_ratio || '1:1'})`
+                        : '1024 × 1024'}
+                    </span>
+                  </div>
+                  <div className="meta-cell">
+                    <span className="meta-k">シード値 (Seed)</span>
+                    <span className="meta-v">{(selectedGalleryItem.seed ?? selectedGalleryItem.seed) ?? 'ランダム'}</span>
+                  </div>
+                  <div className="meta-cell">
+                    <span className="meta-k">ステップ数</span>
+                    <span className="meta-v">{(selectedGalleryItem.steps ?? selectedGalleryItem.steps) ?? 30} steps</span>
+                  </div>
+                  <div className="meta-cell">
+                    <span className="meta-k">作成日時</span>
+                    <span className="meta-v">
+                      {new Date(selectedGalleryItem.created_at * 1000).toLocaleString('ja-JP')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-info-footer">
+                <button
+                  className="modal-action-btn primary"
+                  onClick={() => {
+                    handleSendPromptToGenerator((selectedGalleryItem.prompt || selectedGalleryItem.prompt) || '', (selectedGalleryItem.negative_prompt || selectedGalleryItem.negative_prompt));
+                    setSelectedGalleryItem(null);
+                  }}
+                >
+                  <Sparkles size={16} /> この設定で生成画面へ送る
+                </button>
+                <a
+                  href={`${BACKEND_URL}${selectedGalleryItem.url}`}
+                  download={selectedGalleryItem.filename}
+                  className="modal-action-btn secondary"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Download size={16} /> 保存
+                </a>
+                <button
+                  className="modal-action-btn danger"
+                  onClick={(e) => handleDeleteGalleryItem(selectedGalleryItem.filename, e)}
+                >
+                  <Trash2 size={16} /> 削除
+                </button>
+              </div>
             </div>
           </div>
         </div>
