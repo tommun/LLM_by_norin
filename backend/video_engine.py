@@ -5,7 +5,7 @@ import io
 import gc
 import base64
 import threading
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, Callable
 from PIL import Image, ImageOps
 import torch
 
@@ -141,7 +141,8 @@ class VideoEngine:
         seed: Optional[int] = None,
         width: int = 832,
         height: int = 480,
-        output_filename: Optional[str] = None
+        output_filename: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> Dict[str, Any]:
         """
         Generate ~5-second MP4 video clip from keyframe image + motion prompt.
@@ -172,6 +173,14 @@ class VideoEngine:
         print(f"[VideoEngine] Motion prompt: '{motion_prompt}'")
         start_time = time.time()
 
+        def step_end_callback(pipe, step_idx, timestep, callback_kwargs):
+            if progress_callback:
+                try:
+                    progress_callback(step_idx + 1, num_inference_steps)
+                except Exception:
+                    pass
+            return callback_kwargs
+
         try:
             output = self.pipe(
                 image=pil_image,
@@ -182,7 +191,8 @@ class VideoEngine:
                 num_frames=num_frames,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
-                generator=generator
+                generator=generator,
+                callback_on_step_end=step_end_callback
             )
 
             frames = output.frames[0]  # list of PIL images or numpy arrays

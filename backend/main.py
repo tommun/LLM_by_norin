@@ -910,10 +910,18 @@ def _run_video_pipeline_worker(job_id: str):
         job_queue.update_job(
             job_id,
             status="generating_video",
-            progress=65,
-            status_text="🎬 Wan 2.2 で5秒クリップ(81F)を生成中... (約1〜2分)",
+            progress=50,
+            status_text="🎬 Wan 2.2 モデル準備中...",
             keyframe_url=keyframe_url
         )
+
+        def on_video_step(current_step: int, total_steps: int):
+            step_pct = int(50 + (current_step / total_steps) * 45)  # 50% -> 95%
+            job_queue.update_job(
+                job_id,
+                progress=step_pct,
+                status_text=f"🎬 Wan 2.2 動画推論中... {step_pct}% ({current_step}/{total_steps} steps)"
+            )
 
         # STAGE 3: Wan 2.2 Image-to-Video Generation
         from video_engine import video_engine
@@ -926,7 +934,8 @@ def _run_video_pipeline_worker(job_id: str):
             num_inference_steps=30,
             guidance_scale=5.0,
             width=832,
-            height=480
+            height=480,
+            progress_callback=on_video_step
         )
 
         job_queue.update_job(
