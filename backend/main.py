@@ -923,15 +923,15 @@ def _run_video_pipeline_worker(job_id: str):
                 status_text=f"🎬 Wan 2.2 動画推論中... {step_pct}% ({current_step}/{total_steps} steps)"
             )
 
-        # STAGE 3: Wan 2.2 Image-to-Video Generation
+        # STAGE 3: Wan 2.2 Image-to-Video Generation (49 frames @ 16fps ~3.1s for rock-solid 12GB stability)
         from video_engine import video_engine
         video_res = video_engine.generate(
             keyframe_image=keyframe_res["image_url"],
             motion_prompt=motion_prompt,
             negative_prompt=neg_prompt,
-            num_frames=81,
+            num_frames=49,
             fps=16,
-            num_inference_steps=30,
+            num_inference_steps=25,
             guidance_scale=5.0,
             width=832,
             height=480,

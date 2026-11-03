@@ -33,31 +33,43 @@ class LLMEngine:
         self.last_error = None
         self.load_lock = threading.Lock()
 
+    _last_gpu_info_time: float = 0
+    _cached_gpu_info: Optional[Dict[str, Any]] = None
+    _gpu_lock = threading.Lock()
+
     def get_gpu_info(self) -> Dict[str, Any]:
-        info: Dict[str, Any] = {
-            "cuda_available": torch.cuda.is_available(),
-            "device": self.device,
-            "device_name": "CPU",
-            "vram_total_mb": 0,
-            "vram_used_mb": 0,
-            "vram_reserved_mb": 0,
-            "ram_total_mb": round(psutil.virtual_memory().total / (1024 * 1024), 1),
-            "ram_used_mb": round(psutil.virtual_memory().used / (1024 * 1024), 1),
-            "ram_percent": psutil.virtual_memory().percent,
-            "model_id": self.model_id,
-            "model_loaded": self.is_ready,
-            "is_loading": self.is_loading
-        }
-        if torch.cuda.is_available():
-            try:
-                info["device_name"] = torch.cuda.get_device_name(0)
-                info["vram_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024), 1)
-                info["vram_used_mb"] = round(torch.cuda.memory_allocated(0) / (1024 * 1024), 1)
-                info["vram_reserved_mb"] = round(torch.cuda.memory_reserved(0) / (1024 * 1024), 1)
-                info["vram_percent"] = round((info["vram_used_mb"] / info["vram_total_mb"]) * 100, 1)
-            except Exception as e:
-                info["gpu_query_error"] = str(e)
-        return info
+        current_time = time.time()
+        with self._gpu_lock:
+            if self._cached_gpu_info and (current_time - self._last_gpu_info_time < 1.0):
+                return dict(self._cached_gpu_info)
+
+            info: Dict[str, Any] = {
+                "cuda_available": torch.cuda.is_available(),
+                "device": self.device,
+                "device_name": "CPU",
+                "vram_total_mb": 0,
+                "vram_used_mb": 0,
+                "vram_reserved_mb": 0,
+                "ram_total_mb": round(psutil.virtual_memory().total / (1024 * 1024), 1),
+                "ram_used_mb": round(psutil.virtual_memory().used / (1024 * 1024), 1),
+                "ram_percent": psutil.virtual_memory().percent,
+                "model_id": self.model_id,
+                "model_loaded": self.is_ready,
+                "is_loading": self.is_loading
+            }
+            if torch.cuda.is_available():
+                try:
+                    info["device_name"] = torch.cuda.get_device_name(0)
+                    info["vram_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024), 1)
+                    info["vram_used_mb"] = round(torch.cuda.memory_allocated(0) / (1024 * 1024), 1)
+                    info["vram_reserved_mb"] = round(torch.cuda.memory_reserved(0) / (1024 * 1024), 1)
+                    info["vram_percent"] = round((info["vram_used_mb"] / info["vram_total_mb"]) * 100, 1)
+                except Exception as e:
+                    info["gpu_query_error"] = str(e)
+            
+            self._cached_gpu_info = dict(info)
+            self._last_gpu_info_time = current_time
+            return info
 
     def load_model(self, model_id: Optional[str] = None) -> bool:
         with self.load_lock:

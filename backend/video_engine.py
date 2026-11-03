@@ -69,7 +69,14 @@ class VideoEngine:
                     # 1. Enable model CPU offload: Stages T5, Transformer (DiT), and VAE sequentially on GPU
                     self.pipe.enable_model_cpu_offload()
 
-                    # 2. VAE Tiling & Slicing: Prevents OOM during 81-frame decoding
+                    # 2. Attention Slicing: Drastically reduces 3D Attention activation memory
+                    try:
+                        self.pipe.enable_attention_slicing()
+                        print("[VideoEngine] Attention slicing enabled.")
+                    except Exception as ae:
+                        print(f"[VideoEngine] Attention slicing warning: {ae}")
+
+                    # 3. VAE Tiling & Slicing: Prevents OOM during frame decoding
                     if hasattr(self.pipe, "vae") and self.pipe.vae is not None:
                         try:
                             self.pipe.vae.enable_tiling()
