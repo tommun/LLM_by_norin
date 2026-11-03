@@ -155,6 +155,11 @@ class LLMEngine:
     def unload_model(self):
         """Completely unload Vision LLM from GPU memory to grant 100% VRAM to SDXL"""
         with self.load_lock:
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
             if self.model is not None or self.processor is not None:
                 print("[LLMEngine] Unloading Vision LLM from GPU to free full VRAM...")
                 del self.model
@@ -166,7 +171,7 @@ class LLMEngine:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                print("[LLMEngine] Vision LLM unloaded. GPU VRAM completely freed.")
+                print("[LLMEngine] Vision LLM unloaded. GPU VRAM完全解放。")
 
     def stream_generate(
         self,

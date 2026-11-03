@@ -105,6 +105,11 @@ class VideoEngine:
     def unload_model(self):
         """Completely unload Wan 2.2 from VRAM"""
         with self.lock:
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
             if self.pipe is not None:
                 print("[VideoEngine] Unloading Wan 2.2 from GPU...")
                 del self.pipe
@@ -205,6 +210,12 @@ class VideoEngine:
                 generator=generator,
                 callback_on_step_end=step_end_callback
             )
+
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
 
             frames = output.frames[0]  # list of PIL images or numpy arrays
             elapsed_sec = round(time.time() - start_time, 2)

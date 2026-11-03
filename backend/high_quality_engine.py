@@ -481,6 +481,11 @@ class HighQualityImageEngine:
     def unload_model(self):
         """Unload SDXL and ControlNet from GPU to free full VRAM for Vision LLM"""
         with self.lock:
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
             if self.img2img_pipe is not None:
                 del self.img2img_pipe
                 self.img2img_pipe = None

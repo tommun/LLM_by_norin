@@ -36,6 +36,11 @@ class VRAMOrchestrator:
 
     def purge_gpu_memory(self):
         """Force complete purge of CUDA memory and run garbage collection"""
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
