@@ -41,7 +41,9 @@ class VRAMOrchestrator:
                 torch.cuda.synchronize()
             except Exception:
                 pass
-        gc.collect()
+        import gc
+        for _ in range(3):
+            gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             try:
@@ -49,6 +51,13 @@ class VRAMOrchestrator:
             except Exception:
                 pass
             torch.cuda.reset_peak_memory_stats()
+        # Trim Windows working set and commit pages to prevent paging file overflow
+        if os.name == 'nt':
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetProcessWorkingSetSize(ctypes.windll.kernel32.GetCurrentProcess(), -1, -1)
+            except Exception:
+                pass
 
     def acquire(self, target: ModelType) -> bool:
         """

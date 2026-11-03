@@ -116,9 +116,16 @@ class VideoEngine:
                 self.pipe = None
             self.is_ready = False
             import gc
-            gc.collect()
+            for _ in range(3):
+                gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if os.name == 'nt':
+                try:
+                    import ctypes
+                    ctypes.windll.kernel32.SetProcessWorkingSetSize(ctypes.windll.kernel32.GetCurrentProcess(), -1, -1)
+                except Exception:
+                    pass
             print("[VideoEngine] Wan 2.2 unloaded. GPU VRAM completely freed.")
 
     def _prepare_keyframe(self, image_input: Union[str, Image.Image], target_width: int = 832, target_height: int = 480) -> Image.Image:
