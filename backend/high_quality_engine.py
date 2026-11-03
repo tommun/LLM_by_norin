@@ -146,10 +146,6 @@ class HighQualityImageEngine:
                         pass
 
                     if hasattr(self.pipe, "vae") and self.pipe.vae is not None:
-                        try:
-                            self.pipe.vae.to(dtype=torch.float32)
-                        except Exception:
-                            pass
                         if hasattr(self.pipe.vae, "enable_tiling"):
                             self.pipe.vae.enable_tiling()
                         if hasattr(self.pipe.vae, "enable_slicing"):
