@@ -23,7 +23,7 @@ class VRAMOrchestrator:
 
     def _init_orchestrator(self):
         self.current_model: ModelType = "none"
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
     def get_vram_stats(self) -> dict:
         if not torch.cuda.is_available():
@@ -94,8 +94,7 @@ class VRAMOrchestrator:
 
     def release(self):
         """Unload whichever model is currently loaded"""
-        with self.lock:
-            self.acquire("none")
+        return self.acquire("none")
 
 # Global singleton
 orchestrator = VRAMOrchestrator()

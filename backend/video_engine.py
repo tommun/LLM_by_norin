@@ -53,10 +53,11 @@ class VideoEngine:
 
                 dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
-                print(f"[VideoEngine] Initializing WanImageToVideoPipeline with torch_dtype={dtype}...")
+                print(f"[VideoEngine] Initializing WanImageToVideoPipeline with dtype={dtype} (low_cpu_mem_usage=True)...")
                 self.pipe = WanImageToVideoPipeline.from_pretrained(
                     self.model_id,
-                    torch_dtype=dtype
+                    torch_dtype=dtype,
+                    low_cpu_mem_usage=True
                 )
 
                 if torch.cuda.is_available():
@@ -235,6 +236,11 @@ class VideoEngine:
 
             return result
 
+        except Exception as e:
+            import traceback
+            print(f"[VideoEngine] Generation error occurred: {e}", file=sys.stderr)
+            traceback.print_exc()
+            raise e
         finally:
             # Automatic unloading to immediately restore clean VRAM state
             self.unload_model()
