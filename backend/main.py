@@ -6,6 +6,9 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 import asyncio
+if sys.platform == 'win32':
+    # Prevent [WinError 64] (ERROR_NETNAME_DELETED) and WSAECONNRESET from crashing Uvicorn accept socket on Windows
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import base64
 import json
 import os
