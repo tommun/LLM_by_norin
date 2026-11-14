@@ -4,13 +4,13 @@ import gc
 import torch
 from typing import Optional, Literal
 
-ModelType = Literal["none", "vlm", "sdxl", "video"]
+ModelType = Literal["none", "vlm", "sdxl", "video", "novel"]
 
 class VRAMOrchestrator:
     """
-    Strict 3-Way Exclusive VRAM Orchestrator for RTX 4070 Ti (12GB VRAM).
-    Guarantees that Qwen2.5-VL, RealVisXL (SDXL), and Wan 2.2 (I2V) NEVER co-exist in GPU memory,
-    preventing any swap-out to Windows Shared GPU Memory.
+    Strict 4-Way Exclusive VRAM Orchestrator for RTX 4070 Ti (12GB VRAM).
+    Guarantees that Qwen2.5-VL, RealVisXL (SDXL), Wan 2.2 (I2V), and Novel Creative LLM
+    NEVER co-exist in GPU memory, preventing any swap-out to Windows Shared GPU Memory.
     """
     _instance: Optional["VRAMOrchestrator"] = None
     _lock = threading.Lock()
@@ -91,6 +91,15 @@ class VRAMOrchestrator:
                         video_engine.unload_model()
                 except Exception as e:
                     print(f"[VRAMOrchestrator] Warning unloading Video engine: {e}")
+
+            # 4. Unload Novel Creative LLM (Uncensored Text Writer)
+            if self.current_model == "novel" or target != "novel":
+                try:
+                    from novel_engine import novel_engine
+                    if novel_engine.is_ready:
+                        novel_engine.unload_model()
+                except Exception as e:
+                    print(f"[VRAMOrchestrator] Warning unloading Novel engine: {e}")
 
             # Force purge
             self.purge_gpu_memory()

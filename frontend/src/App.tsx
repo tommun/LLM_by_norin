@@ -39,7 +39,11 @@ import {
   Grid,
   Eye,
   Search,
-  Clock
+  Clock,
+  BookOpen,
+  FileText,
+  Flame,
+  Save
 } from 'lucide-react';
 import './style.css';
 
@@ -114,7 +118,7 @@ interface ChatSession {
   title: string;
   createdAt: number;
   messages: Message[];
-  mode: 'chat' | 'image' | 'train' | 'bots' | 'prompt_master' | 'style_master' | 'gallery';
+  mode: 'chat' | 'image' | 'train' | 'bots' | 'prompt_master' | 'style_master' | 'gallery' | 'novel';
   aspectRatio: AspectRatio;
   style: string;
   loraName?: string;
@@ -141,6 +145,10 @@ interface GpuStatus {
   hq_model_id?: string;
   hq_model_loaded?: boolean;
   hq_is_loading?: boolean;
+  novel_model_id?: string;
+  novel_model_loaded?: boolean;
+  novel_is_loading?: boolean;
+  novel_last_error?: string | null;
 }
 
 const BACKEND_URL = 'http://localhost:8000';
@@ -347,6 +355,212 @@ export default function App() {
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(1024);
   const [imageSteps, setImageSteps] = useState(1);
+
+  // Novel / Creative Writing Studio States (R18 capable)
+  const [novelReferenceText, setNovelReferenceText] = useState('');
+  const [novelWritingMode, setNovelWritingMode] = useState<'continue' | 'mimic' | 'free'>('continue');
+  const [novelInstruction, setNovelInstruction] = useState('');
+  const [novelRating, setNovelRating] = useState<'r18' | 'all_ages'>('r18');
+  const [novelGenre, setNovelGenre] = useState('');
+  const [novelMaxTokens, setNovelMaxTokens] = useState(1800);
+  const [novelTemp, setNovelTemp] = useState(0.82);
+  const [novelOutput, setNovelOutput] = useState('');
+  const [isNovelGenerating, setIsNovelGenerating] = useState(false);
+  const [novelError, setNovelError] = useState<string | null>(null);
+  const [novelTitle, setNovelTitle] = useState('');
+  const [savedNovels, setSavedNovels] = useState<Array<{
+    filename: string;
+    title: string;
+    char_count: number;
+    updated_at_iso: string;
+    preview: string;
+  }>>([]);
+  const [isSavingNovel, setIsSavingNovel] = useState(false);
+  const novelFileInputRef = useRef<HTMLInputElement>(null);
+  const novelAbortRef = useRef<AbortController | null>(null);
+
+  const fetchSavedNovels = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/novel/works`);
+      if (res.ok) {
+        const data = await res.json();
+        setSavedNovels(data.works || []);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    if (activeSession.mode === 'novel') {
+      fetchSavedNovels();
+    }
+  }, [activeSession.mode]);
+
+  const handleLoadNovelModel = async () => {
+    setNovelError(null);
+    try {
+      await fetch(`${BACKEND_URL}/api/novel/load`, { method: 'POST' });
+    } catch (e: any) {
+      setNovelError(`モデル読み込み開始失敗: ${e.message}`);
+    }
+  };
+
+  const handleUploadNovelFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNovelError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`${BACKEND_URL}/api/novel/upload-text`, {
+        method: 'POST',
+        body: formData
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNovelReferenceText(data.text || '');
+        if (!novelTitle) {
+          setNovelTitle(file.name.replace(/\.(txt|md)$/i, ''));
+        }
+      } else {
+        setNovelError('テキストファイルの読み込みに失敗しました');
+      }
+    } catch (err: any) {
+      setNovelError(`ファイル読み込みエラー: ${err.message}`);
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleGenerateNovel = async () => {
+    if (isNovelGenerating) return;
+    setIsNovelGenerating(true);
+    setNovelError(null);
+    setNovelOutput('');
+
+    const controller = new AbortController();
+    novelAbortRef.current = controller;
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/novel/generate/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reference_text: novelReferenceText,
+          writing_mode: novelWritingMode,
+          instruction: novelInstruction,
+          rating: novelRating,
+          genre: novelGenre,
+          max_new_tokens: novelMaxTokens,
+          temperature: novelTemp
+        }),
+        signal: controller.signal
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payloadStr = trimmed.slice(5).trim();
+          if (!payloadStr) continue;
+          try {
+            const parsed = JSON.parse(payloadStr);
+            if (parsed.token) {
+              setNovelOutput(prev => prev + parsed.token);
+            }
+            if (parsed.error) {
+              setNovelError(parsed.error);
+            }
+          } catch {
+            // ignore partial JSON
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setNovelError(`執筆エラー: ${err.message}`);
+      }
+    } finally {
+      setIsNovelGenerating(false);
+      novelAbortRef.current = null;
+    }
+  };
+
+  const handleStopNovel = () => {
+    novelAbortRef.current?.abort();
+    setIsNovelGenerating(false);
+  };
+
+  const handleAppendOutputToReference = () => {
+    if (!novelOutput.trim()) return;
+    setNovelReferenceText(prev => {
+      const base = prev.trimEnd();
+      return base ? `${base}\n\n${novelOutput.trimStart()}` : novelOutput;
+    });
+    setNovelOutput('');
+  };
+
+  const handleSaveNovelWork = async () => {
+    const contentToSave = novelOutput.trim() || novelReferenceText.trim();
+    if (!contentToSave) return;
+    setIsSavingNovel(true);
+    try {
+      const titleToUse = novelTitle.trim() || `創作作品_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`;
+      const res = await fetch(`${BACKEND_URL}/api/novel/works`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: titleToUse,
+          content: contentToSave,
+          rating: novelRating
+        })
+      });
+      if (res.ok) {
+        setNovelTitle(titleToUse);
+        fetchSavedNovels();
+      }
+    } finally {
+      setIsSavingNovel(false);
+    }
+  };
+
+  const handleLoadSavedNovel = async (filename: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/novel/works/${encodeURIComponent(filename)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setNovelReferenceText(data.content || '');
+        setNovelTitle(data.title || '');
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDeleteSavedNovel = async (filename: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/novel/works/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchSavedNovels();
+      }
+    } catch {
+      // ignore
+    }
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1887,6 +2101,13 @@ export default function App() {
               <span>💬 対話チャット</span>
             </button>
             <button
+              className={`main-nav-btn ${activeSession.mode === 'novel' ? 'active-novel' : ''}`}
+              onClick={() => updateActiveSession(s => ({ ...s, mode: 'novel' }))}
+            >
+              <BookOpen size={15} />
+              <span>📖 小説・創作 (R18)</span>
+            </button>
+            <button
               className={`main-nav-btn ${activeSession.mode === 'prompt_master' ? 'active-prompt' : ''}`}
               onClick={() => updateActiveSession(s => ({ ...s, mode: 'prompt_master' }))}
             >
@@ -2448,6 +2669,302 @@ export default function App() {
                 </div>
               )}
             </div>
+          ) : activeSession.mode === 'novel' ? (
+            <div className="novel-studio">
+              {/* Novel Studio Header */}
+              <div className="novel-studio-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="novel-icon-badge">
+                    <BookOpen size={22} color="#f43f5e" />
+                  </div>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: 10 }}>
+                      テキスト創作スタジオ
+                      <span className={`rating-badge ${novelRating === 'r18' ? 'r18' : 'all'}`}>
+                        {novelRating === 'r18' ? '🔞 R18 無制限モード' : '🌿 全年齢モード'}
+                      </span>
+                    </h2>
+                    <p style={{ margin: '3px 0 0', fontSize: '0.8rem', color: '#94a3b8' }}>
+                      小説や文章を読み込んで文体・キャラクターを継承し、続きの執筆や同タイプの創作をローカル無検閲LLMで生成
+                    </p>
+                  </div>
+                </div>
+
+                {/* Novel Model Status & Load Button */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {gpuStatus?.novel_model_loaded ? (
+                    <span className="novel-model-pill ready">
+                      <span className="pulse-dot green" /> 創作LLM稼働中 (Abliterated 7B)
+                    </span>
+                  ) : gpuStatus?.novel_is_loading ? (
+                    <span className="novel-model-pill loading">
+                      <RefreshCw size={13} className="spin-icon" /> モデル準備中...
+                    </span>
+                  ) : (
+                    <button className="novel-load-btn" onClick={handleLoadNovelModel} title="事前ロード（執筆開始時にも自動ロードされます）">
+                      <Cpu size={14} />
+                      <span>創作LLMを事前ロード</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {novelError && (
+                <div className="novel-error-banner">
+                  <AlertCircle size={16} />
+                  <span>{novelError}</span>
+                </div>
+              )}
+
+              {/* 2-Column Workspace */}
+              <div className="novel-workspace-grid">
+                {/* Left Column: Reference Input & Generation Controls */}
+                <div className="novel-panel">
+                  <div className="novel-panel-header">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <FileText size={16} color="#38bdf8" />
+                      <span style={{ fontWeight: 600, color: '#e2e8f0' }}>参考文章・既存小説の読み込み</span>
+                      <span className="char-count-pill">{novelReferenceText.length.toLocaleString()} 文字</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <input
+                        type="file"
+                        accept=".txt,.md,text/plain,text/markdown"
+                        ref={novelFileInputRef}
+                        style={{ display: 'none' }}
+                        onChange={handleUploadNovelFile}
+                      />
+                      <button
+                        className="novel-small-btn"
+                        onClick={() => novelFileInputRef.current?.click()}
+                        title="PCから .txt / .md ファイルを読み込む（UTF-8 / Shift-JIS自動判別）"
+                      >
+                        <FolderUp size={13} /> ファイル読込
+                      </button>
+                      {novelReferenceText && (
+                        <button
+                          className="novel-small-btn danger"
+                          onClick={() => setNovelReferenceText('')}
+                          title="参考文章をクリア"
+                        >
+                          <Trash2 size={13} /> クリア
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <textarea
+                    className="novel-textarea"
+                    value={novelReferenceText}
+                    onChange={(e) => setNovelReferenceText(e.target.value)}
+                    placeholder="ここに続きを書きたい小説や、文体を真似したい参考テキストを貼り付けるか、「ファイル読込」から .txt / .md を読み込んでください。&#10;（自由創作モードの場合は空欄または設定メモだけでも執筆可能です）"
+                  />
+
+                  {/* Mode & Rating Controls */}
+                  <div className="novel-controls-box">
+                    <div className="novel-control-row">
+                      <span className="novel-label">執筆モード:</span>
+                      <div className="novel-segmented">
+                        <button
+                          className={novelWritingMode === 'continue' ? 'active' : ''}
+                          onClick={() => setNovelWritingMode('continue')}
+                        >
+                          続きを執筆
+                        </button>
+                        <button
+                          className={novelWritingMode === 'mimic' ? 'active' : ''}
+                          onClick={() => setNovelWritingMode('mimic')}
+                        >
+                          同タイプで新作
+                        </button>
+                        <button
+                          className={novelWritingMode === 'free' ? 'active' : ''}
+                          onClick={() => setNovelWritingMode('free')}
+                        >
+                          自由執筆
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="novel-control-row" style={{ justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className="novel-label">レーティング:</span>
+                        <button
+                          className={`rating-toggle-btn ${novelRating === 'r18' ? 'active-r18' : ''}`}
+                          onClick={() => setNovelRating(r => r === 'r18' ? 'all_ages' : 'r18')}
+                        >
+                          <Flame size={14} />
+                          <span>{novelRating === 'r18' ? 'R18（成人向け・無検閲）ON' : '全年齢モード'}</span>
+                        </button>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className="novel-label">ジャンル:</span>
+                        <input
+                          type="text"
+                          className="novel-mini-input"
+                          value={novelGenre}
+                          onChange={(e) => setNovelGenre(e.target.value)}
+                          placeholder="例: 異世界ファンタジー / 純愛 / 官能"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="novel-control-row" style={{ gap: 16 }}>
+                      <label className="novel-slider-label">
+                        <span>出力長: {novelMaxTokens} tokens</span>
+                        <input
+                          type="range"
+                          min={500}
+                          max={3500}
+                          step={100}
+                          value={novelMaxTokens}
+                          onChange={(e) => setNovelMaxTokens(Number(e.target.value))}
+                        />
+                      </label>
+                      <label className="novel-slider-label">
+                        <span>創造性 (Temp): {novelTemp.toFixed(2)}</span>
+                        <input
+                          type="range"
+                          min={0.3}
+                          max={1.2}
+                          step={0.05}
+                          value={novelTemp}
+                          onChange={(e) => setNovelTemp(Number(e.target.value))}
+                        />
+                      </label>
+                    </div>
+
+                    <div>
+                      <span className="novel-label" style={{ display: 'block', marginBottom: 6 }}>
+                        展開指示・プロット・シチュエーション要望:
+                      </span>
+                      <textarea
+                        className="novel-instruction-input"
+                        rows={3}
+                        value={novelInstruction}
+                        onChange={(e) => setNovelInstruction(e.target.value)}
+                        placeholder={
+                          novelWritingMode === 'continue'
+                            ? '例: この直後、二人の距離が一気に縮まり情熱的に求め合う展開で。心理描写を濃密に。'
+                            : novelWritingMode === 'mimic'
+                            ? '例: 参考文章と同じ繊細かつ官能的な文体で、女騎士と魔術師が密室で一夜を過ごす短編を書いて。'
+                            : '例: キャラクター設定やストーリーのプロット、盛り込みたいプレイや展開を自由に入力してください。'
+                        }
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                      {isNovelGenerating ? (
+                        <button className="novel-action-btn stop" onClick={handleStopNovel}>
+                          <Square size={16} />
+                          <span>執筆を停止する</span>
+                        </button>
+                      ) : (
+                        <button className="novel-action-btn generate" onClick={handleGenerateNovel}>
+                          <Sparkles size={16} />
+                          <span>{novelRating === 'r18' ? '🔞 創作を開始する (R18対応)' : '✍️ 創作を開始する'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Live Output Editor & Saved Works */}
+                <div className="novel-panel">
+                  <div className="novel-panel-header">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Edit2 size={16} color="#10b981" />
+                      <span style={{ fontWeight: 600, color: '#e2e8f0' }}>生成された文章・エディタ</span>
+                      <span className="char-count-pill">{novelOutput.length.toLocaleString()} 文字</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {novelOutput && (
+                        <>
+                          <button
+                            className="novel-small-btn accent"
+                            onClick={handleAppendOutputToReference}
+                            title="生成された続きを左側の本文末尾に結合して、さらにその続きを書けるようにします"
+                          >
+                            <Plus size={13} /> 本文に繋げて続きを書く
+                          </button>
+                          <button
+                            className="novel-small-btn"
+                            onClick={() => navigator.clipboard.writeText(novelOutput)}
+                            title="クリップボードにコピー"
+                          >
+                            <Copy size={13} /> コピー
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <textarea
+                    className="novel-textarea output-editor"
+                    value={novelOutput}
+                    onChange={(e) => setNovelOutput(e.target.value)}
+                    placeholder={isNovelGenerating ? '執筆中...' : 'ここに生成された小説の続き・創作文章がリアルタイムで出力されます。（出力後の手動修正や加筆も可能です）'}
+                  />
+
+                  {/* Save Toolbar */}
+                  <div className="novel-save-bar">
+                    <input
+                      type="text"
+                      className="novel-title-input"
+                      value={novelTitle}
+                      onChange={(e) => setNovelTitle(e.target.value)}
+                      placeholder="作品タイトル（例: 闘技場の夜 第1章）"
+                    />
+                    <button
+                      className="novel-small-btn save"
+                      onClick={handleSaveNovelWork}
+                      disabled={isSavingNovel || (!novelOutput.trim() && !novelReferenceText.trim())}
+                    >
+                      <Save size={14} /> {isSavingNovel ? '保存中...' : 'ローカル保存 (.txt)'}
+                    </button>
+                  </div>
+
+                  {/* Saved Works List */}
+                  <div className="novel-saved-list-box">
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', marginBottom: 6, display: 'flex', justifyContent: 'space-between' }}>
+                      <span>📚 保存済み作品 (outputs/novels/)</span>
+                      <span>{savedNovels.length} 件</span>
+                    </div>
+                    {savedNovels.length === 0 ? (
+                      <div style={{ fontSize: '0.78rem', color: '#64748b', padding: '8px 0' }}>
+                        まだ保存された作品はありません。
+                      </div>
+                    ) : (
+                      <div className="novel-saved-items">
+                        {savedNovels.map((w) => (
+                          <div key={w.filename} className="novel-saved-item">
+                            <div
+                              style={{ flex: 1, cursor: 'pointer', minWidth: 0 }}
+                              onClick={() => handleLoadSavedNovel(w.filename)}
+                              title="クリックして左側のエディタに読み込む"
+                            >
+                              <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {w.title}
+                              </div>
+                              <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                                {w.char_count.toLocaleString()}文字 ・ {w.updated_at_iso}
+                              </div>
+                            </div>
+                            <button
+                              className="novel-small-btn danger"
+                              onClick={() => handleDeleteSavedNovel(w.filename)}
+                              title="削除"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
           ) : activeSession.messages.length === 0 ? (
             <div className="empty-chat">
               {activeSession.mode === 'chat' && currentBot ? (
@@ -2898,6 +3415,14 @@ export default function App() {
                 <span>対話 & 画像認識</span>
               </button>
               <button
+                className={`mode-tab ${activeSession.mode === 'novel' ? 'active-novel' : ''}`}
+                onClick={() => updateActiveSession(s => ({ ...s, mode: 'novel' }))}
+                title="文章を読み込んで続きを執筆・文体模倣・R18創作"
+              >
+                <BookOpen size={14} color="#f43f5e" />
+                <span>📖 小説・創作 (R18)</span>
+              </button>
+              <button
                 className={`mode-tab ${activeSession.mode === 'prompt_master' ? 'active-prompt-master' : ''}`}
                 onClick={() => updateActiveSession(s => ({ ...s, mode: 'prompt_master' }))}
                 title="Midjourney級のプロンプト忠実度・最高画質生成 (SDXL 1024×1024)"
@@ -3179,7 +3704,7 @@ export default function App() {
             </div>
           )}
 
-          {activeSession.mode === 'gallery' ? null : activeSession.mode === 'bots' ? (
+          {(activeSession.mode === 'gallery' || activeSession.mode === 'novel') ? null : activeSession.mode === 'bots' ? (
             <div className="bot-studio-guide-bar">
               <span>💡 ボットスタジオを閲覧中。お好みのボットのカードから「💬 対話を開始」を押すと、専用のチャットが開始します。</span>
               <button className="guide-create-bot-btn" onClick={startCreateBot}>

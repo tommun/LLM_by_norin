@@ -19,7 +19,7 @@ import torch
 import gc
 from contextlib import asynccontextmanager
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from model_engine import engine, DEFAULT_MODEL_ID
 from image_engine import image_engine, STYLE_PRESETS
 from high_quality_engine import hq_image_engine, HQ_ASPECT_RATIOS
+from novel_engine import novel_engine
 
 # Lifespan event to automatically load Vision LLM model at startup
 @asynccontextmanager
@@ -235,6 +236,10 @@ def get_status():
     status["hq_model_id"] = hq_image_engine.model_id
     status["hq_model_loaded"] = hq_image_engine.is_ready
     status["hq_is_loading"] = hq_image_engine.is_loading
+    status["novel_model_id"] = novel_engine.model_id
+    status["novel_model_loaded"] = novel_engine.is_ready
+    status["novel_is_loading"] = novel_engine.is_loading
+    status["novel_last_error"] = novel_engine.last_error
     return status
 
 @app.post("/api/gpu/clear-cache")
@@ -250,6 +255,10 @@ def clear_gpu_cache():
     status["hq_model_id"] = hq_image_engine.model_id
     status["hq_model_loaded"] = hq_image_engine.is_ready
     status["hq_is_loading"] = hq_image_engine.is_loading
+    status["novel_model_id"] = novel_engine.model_id
+    status["novel_model_loaded"] = novel_engine.is_ready
+    status["novel_is_loading"] = novel_engine.is_loading
+    status["novel_last_error"] = novel_engine.last_error
     return status
 
 @app.post("/api/model/load")
@@ -1071,6 +1080,138 @@ def get_video_style_profiles():
             except Exception:
                 pass
     return profiles
+
+# ========================================================
+# Creative Writing & R18 Novel Studio APIs
+# ========================================================
+NOVELS_DIR = os.path.join(OUTPUTS_DIR, "novels")
+os.makedirs(NOVELS_DIR, exist_ok=True)
+
+class NovelGenerateRequest(BaseModel):
+    reference_text: str = Field(default="", description="読み込む参考文章・既存の小説本文")
+    writing_mode: str = Field(default="continue", description="continue | mimic | free")
+    instruction: str = Field(default="", description="展開指示・新作テーマ・プロット")
+    rating: str = Field(default="r18", description="all_ages | r18")
+    genre: str = Field(default="", description="ジャンル・文体タグ")
+    max_new_tokens: int = Field(default=1800, description="出力トークン長")
+    temperature: float = Field(default=0.82, description="創造性温度")
+    top_p: float = Field(default=0.92)
+    repetition_penalty: float = Field(default=1.08)
+
+class NovelSaveRequest(BaseModel):
+    title: str = Field(..., description="作品タイトル")
+    content: str = Field(..., description="本文テキスト")
+    rating: str = Field(default="r18")
+
+@app.post("/api/novel/load")
+def load_novel_model_endpoint(background_tasks: BackgroundTasks):
+    """Load the uncensored creative writing LLM (abliterated) in background"""
+    if novel_engine.is_loading:
+        return {"status": "busy", "message": "Novel model is already loading."}
+    if novel_engine.is_ready:
+        return {"status": "ready", "model_id": novel_engine.model_id}
+    background_tasks.add_task(novel_engine.load_model)
+    return {"status": "loading_started", "model_id": novel_engine.model_id}
+
+@app.post("/api/novel/upload-text")
+async def upload_novel_text(file: UploadFile = File(...)):
+    """Read uploaded .txt or .md file with automatic Japanese encoding detection (UTF-8 / Shift-JIS / EUC-JP)"""
+    raw_bytes = await file.read()
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "cp932", "shift_jis", "euc_jp"):
+        try:
+            text = raw_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw_bytes.decode("utf-8", errors="replace")
+    return {
+        "filename": file.filename,
+        "char_count": len(text),
+        "text": text
+    }
+
+@app.post("/api/novel/generate/stream")
+def generate_novel_stream_endpoint(req: NovelGenerateRequest):
+    """Stream generated novel/creative writing text via SSE"""
+    def event_stream():
+        try:
+            for chunk in novel_engine.stream_generate(
+                reference_text=req.reference_text,
+                writing_mode=req.writing_mode,
+                instruction=req.instruction,
+                rating=req.rating,
+                genre=req.genre,
+                max_new_tokens=req.max_new_tokens,
+                temperature=req.temperature,
+                top_p=req.top_p,
+                repetition_penalty=req.repetition_penalty
+            ):
+                yield f"data: {json.dumps({'token': chunk}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.get("/api/novel/works")
+def list_novel_works():
+    """List saved creative writing works in outputs/novels/"""
+    os.makedirs(NOVELS_DIR, exist_ok=True)
+    works = []
+    for fn in os.listdir(NOVELS_DIR):
+        if fn.lower().endswith((".txt", ".md")):
+            fp = os.path.join(NOVELS_DIR, fn)
+            stat = os.stat(fp)
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except Exception:
+                content = ""
+            works.append({
+                "filename": fn,
+                "title": os.path.splitext(fn)[0],
+                "size_bytes": stat.st_size,
+                "char_count": len(content),
+                "updated_at": int(stat.st_mtime),
+                "updated_at_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                "preview": content[:120].replace("\n", " ")
+            })
+    works.sort(key=lambda w: w["updated_at"], reverse=True)
+    return {"works": works}
+
+@app.get("/api/novel/works/{filename}")
+def read_novel_work(filename: str):
+    """Read a saved novel work by filename"""
+    safe_name = os.path.basename(filename)
+    fp = os.path.join(NOVELS_DIR, safe_name)
+    if not os.path.exists(fp):
+        raise HTTPException(status_code=404, detail="Work not found")
+    with open(fp, "r", encoding="utf-8") as f:
+        content = f.read()
+    return {"filename": safe_name, "title": os.path.splitext(safe_name)[0], "content": content}
+
+@app.post("/api/novel/works")
+def save_novel_work(req: NovelSaveRequest):
+    """Save creative writing work to outputs/novels/"""
+    os.makedirs(NOVELS_DIR, exist_ok=True)
+    clean_title = re.sub(r'[\\/:*?"<>|]', '_', req.title).strip() or f"novel_{int(time.time())}"
+    filename = f"{clean_title}.txt"
+    fp = os.path.join(NOVELS_DIR, filename)
+    with open(fp, "w", encoding="utf-8") as f:
+        f.write(req.content)
+    return {"status": "success", "filename": filename, "char_count": len(req.content)}
+
+@app.delete("/api/novel/works/{filename}")
+def delete_novel_work(filename: str):
+    """Delete a saved novel work"""
+    safe_name = os.path.basename(filename)
+    fp = os.path.join(NOVELS_DIR, safe_name)
+    if not os.path.exists(fp):
+        raise HTTPException(status_code=404, detail="Work not found")
+    os.remove(fp)
+    return {"status": "deleted", "filename": safe_name}
 
 if __name__ == "__main__":
     import uvicorn
