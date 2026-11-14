@@ -74,6 +74,10 @@ class NovelEngine:
             )
 
             try:
+                if os.name == "nt" and hasattr(os, "add_dll_directory"):
+                    torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+                    if os.path.isdir(torch_lib):
+                        os.add_dll_directory(torch_lib)
                 from llama_cpp import Llama
 
                 gguf_path = hf_hub_download(
