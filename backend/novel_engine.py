@@ -7,37 +7,57 @@ if hasattr(sys.stderr, 'reconfigure'):
 
 import gc
 import threading
-import time
-from typing import Optional, Generator, Dict, Any, List
+from typing import Optional, Generator, Dict, List
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, BitsAndBytesConfig
+from huggingface_hub import hf_hub_download
 
-DEFAULT_NOVEL_MODEL_ID = os.getenv("NOVEL_MODEL_ID", "huihui-ai/Qwen2.5-7B-Instruct-abliterated-v2")
+DEFAULT_NOVEL_MODEL_ID = os.getenv(
+    "NOVEL_MODEL_ID",
+    "mradermacher/Qwen2.5-14B-Instruct-abliterated-v2-GGUF",
+)
+DEFAULT_NOVEL_GGUF_FILENAME = os.getenv(
+    "NOVEL_GGUF_FILENAME",
+    "Qwen2.5-14B-Instruct-abliterated-v2.Q4_K_M.gguf",
+)
+DEFAULT_NOVEL_N_CTX = int(os.getenv("NOVEL_N_CTX", "12288"))
+
 
 class NovelEngine:
     """
     Uncensored Creative Writing & Novel Generation Engine (R18 capable).
-    Uses abliterated 7B text LLM quantized in 4-bit NF4 for 12GB VRAM stability
-    with long-context story continuation and style-mimicking capabilities.
+    Uses abliterated 14B GGUF (Q4_K_M ~8.37 GB) via llama-cpp-python (CUDA)
+    so it fits entirely in 12GB VRAM with high speed and rich Japanese prose.
     """
-    def __init__(self, model_id: str = DEFAULT_NOVEL_MODEL_ID):
+    def __init__(
+        self,
+        model_id: str = DEFAULT_NOVEL_MODEL_ID,
+        gguf_filename: str = DEFAULT_NOVEL_GGUF_FILENAME,
+    ):
         self.model_id = model_id
-        self.tokenizer = None
+        self.gguf_filename = gguf_filename
         self.model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.is_loading = False
         self.is_ready = False
         self.last_error: Optional[str] = None
         self.load_lock = threading.Lock()
+        self.infer_lock = threading.Lock()
 
-    def load_model(self, model_id: Optional[str] = None) -> bool:
+    def load_model(self, model_id: Optional[str] = None, gguf_filename: Optional[str] = None) -> bool:
         with self.load_lock:
-            if self.is_ready and self.model is not None and (not model_id or model_id == self.model_id):
+            target_id = model_id or self.model_id
+            target_file = gguf_filename or self.gguf_filename
+
+            if (
+                self.is_ready
+                and self.model is not None
+                and target_id == self.model_id
+                and target_file == self.gguf_filename
+            ):
                 return True
 
-            if model_id:
-                self.model_id = model_id
-
+            self.model_id = target_id
+            self.gguf_filename = target_file
             self.is_loading = True
             self.last_error = None
 
@@ -48,40 +68,43 @@ class NovelEngine:
             except Exception as ex:
                 print(f"[NovelEngine] Orchestrator notice: {ex}")
 
-            print(f"[NovelEngine] Loading Creative Writing LLM: {self.model_id} (4-bit NF4) on {self.device}...")
+            print(
+                f"[NovelEngine] Loading Creative Writing GGUF: "
+                f"{self.model_id} / {self.gguf_filename} (n_ctx={DEFAULT_NOVEL_N_CTX}) on {self.device}..."
+            )
 
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_id,
-                    trust_remote_code=True
+                from llama_cpp import Llama
+
+                gguf_path = hf_hub_download(
+                    repo_id=self.model_id,
+                    filename=self.gguf_filename,
                 )
 
-                if torch.cuda.is_available():
-                    bnb_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_compute_dtype=torch.bfloat16,
-                        bnb_4bit_use_double_quant=True,
-                    )
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        self.model_id,
-                        quantization_config=bnb_config,
-                        device_map={"": 0},
-                        trust_remote_code=True,
-                        low_cpu_mem_usage=True
-                    )
-                else:
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        self.model_id,
-                        torch_dtype=torch.float32,
-                        trust_remote_code=True,
-                        low_cpu_mem_usage=True
-                    ).to("cpu")
+                n_gpu_layers = -1 if torch.cuda.is_available() else 0
 
-                self.model.eval()
+                try:
+                    self.model = Llama(
+                        model_path=gguf_path,
+                        n_gpu_layers=n_gpu_layers,
+                        n_ctx=DEFAULT_NOVEL_N_CTX,
+                        n_batch=512,
+                        flash_attn=True,
+                        verbose=False,
+                    )
+                except Exception as fa_err:
+                    print(f"[NovelEngine] flash_attn init fallback ({fa_err}), retrying without flash_attn...")
+                    self.model = Llama(
+                        model_path=gguf_path,
+                        n_gpu_layers=n_gpu_layers,
+                        n_ctx=DEFAULT_NOVEL_N_CTX,
+                        n_batch=512,
+                        verbose=False,
+                    )
+
                 self.is_ready = True
                 self.is_loading = False
-                print(f"[NovelEngine] Creative Writing LLM {self.model_id} loaded and ready!")
+                print(f"[NovelEngine] Creative Writing GGUF {self.gguf_filename} loaded and ready!")
                 return True
             except Exception as e:
                 import traceback
@@ -89,29 +112,30 @@ class NovelEngine:
                 self.is_ready = False
                 self.is_loading = False
                 self.last_error = str(e)
-                print(f"[NovelEngine] Failed to load {self.model_id}: {e}", file=sys.stderr)
+                print(f"[NovelEngine] Failed to load {self.model_id}/{self.gguf_filename}: {e}", file=sys.stderr)
                 return False
 
     def unload_model(self):
         with self.load_lock:
+            if self.model is not None:
+                print("[NovelEngine] Unloading Creative Writing GGUF from GPU...")
+                try:
+                    if hasattr(self.model, "close"):
+                        self.model.close()
+                except Exception:
+                    pass
+                del self.model
+                self.model = None
+            self.is_ready = False
+            for _ in range(3):
+                gc.collect()
             if torch.cuda.is_available():
                 try:
                     torch.cuda.synchronize()
                 except Exception:
                     pass
-            if self.model is not None:
-                print("[NovelEngine] Unloading Creative Writing LLM from GPU...")
-                del self.model
-                self.model = None
-            if self.tokenizer is not None:
-                del self.tokenizer
-                self.tokenizer = None
-            self.is_ready = False
-            for _ in range(3):
-                gc.collect()
-            if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            print("[NovelEngine] Creative Writing LLM unloaded. GPU VRAM freed.")
+            print("[NovelEngine] Creative Writing GGUF unloaded. GPU VRAM freed.")
 
     def _build_messages(
         self,
@@ -154,9 +178,8 @@ class NovelEngine:
                 f"{genre_line}{rating_directive}"
             )
             ref_block = reference_text.strip()
-            # Keep tail if extremely long (up to ~12000 chars for 7B context comfort)
-            if len(ref_block) > 12000:
-                ref_block = "...(中略)...\n" + ref_block[-12000:]
+            if len(ref_block) > 14000:
+                ref_block = "...(中略)...\n" + ref_block[-14000:]
 
             user_prompt = (
                 f"【これまでの本文】\n{ref_block}\n\n"
@@ -171,8 +194,8 @@ class NovelEngine:
                 f"{genre_line}{rating_directive}"
             )
             ref_block = reference_text.strip()
-            if len(ref_block) > 10000:
-                ref_block = ref_block[:10000] + "\n...(以下略)..."
+            if len(ref_block) > 12000:
+                ref_block = ref_block[:12000] + "\n...(以下略)..."
 
             user_prompt = (
                 f"【文体・テイストの参考文章】\n{ref_block}\n\n"
@@ -226,36 +249,28 @@ class NovelEngine:
             genre=genre
         )
 
-        text_prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        inputs = self.tokenizer([text_prompt], return_tensors="pt").to(self.model.device)
+        safe_max_tokens = max(128, min(4096, int(max_new_tokens)))
+        safe_temp = max(0.0, min(1.5, float(temperature)))
+        safe_top_p = float(top_p)
+        safe_rep = float(repetition_penalty)
 
-        streamer = TextIteratorStreamer(
-            self.tokenizer,
-            skip_prompt=True,
-            skip_special_tokens=True
-        )
-
-        generation_kwargs = dict(
-            **inputs,
-            streamer=streamer,
-            max_new_tokens=max(128, min(4096, int(max_new_tokens))),
-            do_sample=True if temperature > 0 else False,
-            temperature=max(0.1, min(1.5, float(temperature))) if temperature > 0 else 1.0,
-            top_p=float(top_p),
-            repetition_penalty=float(repetition_penalty),
-        )
-
-        thread = threading.Thread(target=self.model.generate, kwargs=generation_kwargs)
-        thread.start()
-
-        for new_text in streamer:
-            yield new_text
-
-        thread.join()
+        with self.infer_lock:
+            stream = self.model.create_chat_completion(
+                messages=messages,
+                max_tokens=safe_max_tokens,
+                temperature=safe_temp,
+                top_p=safe_top_p,
+                repeat_penalty=safe_rep,
+                stream=True,
+            )
+            for chunk in stream:
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                content = delta.get("content")
+                if content:
+                    yield content
 
 
 # Global singleton

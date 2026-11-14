@@ -17,3 +17,4 @@ bitsandbytes>=0.50.2
 sentencepiece>=0.2.0
 protobuf>=5.0.0
 python-multipart>=0.0.9
+llama-cpp-python>=0.3.0
