@@ -1894,7 +1894,7 @@ async def train_status_cmd(ctx):
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author == bot.user:
+    if message.author == bot.user or message.author.bot or message.webhook_id is not None:
         return
 
     print(f"[Bot] Received message in #{message.channel}: '{message.content}' from {message.author}", flush=True)
@@ -1915,12 +1915,11 @@ async def on_message(message: discord.Message):
         if message.guild and message.guild.me:
             is_role_mentioned = any(r in message.guild.me.roles for r in message.role_mentions)
         if not is_role_mentioned:
-            is_role_mentioned = any("ルカ" in r.name.lower() or "bot" in r.name.lower() for r in message.role_mentions)
+            is_role_mentioned = any("ルカ" in r.name.lower() for r in message.role_mentions)
             
     is_named = (
         bot.user.name.lower() in message.content.lower()
         or "ルカ" in message.content
-        or bool(re.search(r"<@&\d+>", message.content))
     )
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_reply = False
